@@ -18,7 +18,10 @@ type (
 		AppendEntryPipeline(*ServerInfo) (AppendEntryPipeline, error)
 		InstallSnapShot(*ServerInfo, *InstallSnapshotRequest) (*InstallSnapshotResponse, error)
 		// SetFastPath 用于快速处理，不用经过主流程，不支持也没关系
-		SetFastPath(cb func(rpc *CMD))
+		FastPath
+	}
+	FastPath interface {
+		SetFastPath(cb fastPath)
 	}
 
 	AppendEntryPipeline interface {
@@ -28,8 +31,10 @@ type (
 	}
 )
 
-func (s *NetTransport) SetFastPath(cb func(cmd *CMD)) {
-	s.fastPath = cb
+func (s *NetTransport) SetFastPath(cb fastPath) {
+	if fp, ok := s.processor.(FastPath); ok {
+		fp.SetFastPath(cb)
+	}
 }
 
 func (s *NetTransport) VoteRequest(info *ServerInfo, request *VoteRequest) (*VoteResponse, error) {

@@ -7,7 +7,8 @@ import (
 )
 
 type Conf struct {
-	Addr              net.Addr
+	LocalAddr         net.Addr
+	LocalID           ServerID
 	HeartBeatCycle    time.Duration
 	MemberList        []Member
 	HeartBeatTimeout  time.Duration
@@ -35,7 +36,7 @@ type Member struct {
 }
 
 var Config = &Conf{
-	Addr: func() net.Addr {
+	LocalAddr: func() net.Addr {
 		addr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:8888")
 		if err != nil {
 			panic(fmt.Errorf("ResolveTCPAddr err :%s", err))
@@ -43,4 +44,39 @@ var Config = &Conf{
 		return addr
 	}(),
 	HeartBeatCycle: time.Second * 5,
+}
+
+func validateConf(config *Conf) error {
+	ef := fmt.Errorf
+	if len(config.LocalID) == 0 {
+		return ef("local id is nil")
+	}
+	if config.HeartBeatTimeout < 5*time.Millisecond {
+		return fmt.Errorf("HeartbeatTimeout is too low")
+	}
+	if config.ElectionTimeout < 5*time.Millisecond {
+		return fmt.Errorf("ElectionTimeout is too low")
+	}
+	if config.CommitTimeout < time.Millisecond {
+		return fmt.Errorf("CommitTimeout is too low")
+	}
+	if config.MaxAppendEntries <= 0 {
+		return fmt.Errorf("MaxAppendEntries must be positive")
+	}
+	if config.MaxAppendEntries > 1024 {
+		return fmt.Errorf("MaxAppendEntries is too large")
+	}
+	if config.SnapshotInterval < 5*time.Millisecond {
+		return fmt.Errorf("SnapshotInterval is too low")
+	}
+	if config.LeaderShipTimeout < 5*time.Millisecond {
+		return fmt.Errorf("LeaderLeaseTimeout is too low")
+	}
+	if config.LeaderShipTimeout > config.HeartBeatTimeout {
+		return fmt.Errorf("LeaderLeaseTimeout (%s) cannot be larger than heartbeat timeout (%s)", config.LeaderShipTimeout, config.HeartBeatTimeout)
+	}
+	if config.ElectionTimeout < config.HeartBeatTimeout {
+		return fmt.Errorf("ElectionTimeout (%s) must be equal or greater than Heartbeat Timeout (%s)", config.ElectionTimeout, config.HeartBeatTimeout)
+	}
+	return nil
 }

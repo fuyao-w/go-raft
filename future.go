@@ -19,7 +19,7 @@ type nilRespFuture = interface{}
 
 // futureInter 返回值的类型
 type futureInter interface {
-	SnapShotFutureResp | configurations | nilRespFuture | useSnapShotFuture | any
+	SnapShotFutureResp | configuration | nilRespFuture | useSnapShotFuture | any
 }
 
 // Future 用于异步提交，Response 会同步返回，可以重复调用
@@ -60,6 +60,10 @@ func (d *deferResponse[T]) Response() (T, error) {
 type LogFuture struct {
 	deferResponse[any]
 	log *LogEntry
+}
+
+func (l *LogFuture) Index() uint64 {
+	return l.log.Index
 }
 
 // responded 返回响应结果，在调用该方法后 Response 就会返回，该方法不支持重复调用
@@ -150,7 +154,7 @@ type leadershipTransferFuture struct {
 }
 
 type configurationGetFuture struct {
-	deferResponse[configurations]
+	deferResponse[configuration]
 }
 
 // bootstrapFuture is used to attempt a live bootstrap of the cluster. See the
@@ -201,4 +205,25 @@ func (s *shutDownFuture) Response() (nilRespFuture, error) {
 		inter.Close()
 	}
 	return nil, nil
+}
+
+type ApplyFuture interface {
+	IndexFuture
+	Future[interface{}]
+}
+type IndexFuture interface {
+	Index() uint64
+	Future[nilRespFuture]
+}
+
+type errFuture[T any] struct {
+	err error
+}
+
+func (e *errFuture[T]) Index() uint64 {
+	return 0
+}
+
+func (e *errFuture[T]) Response() (t T, _ error) {
+	return t, e.err
 }

@@ -24,13 +24,13 @@ type NetLayer interface {
 }
 
 type (
+	fastPath     func(cb *CMD) bool
 	NetTransport struct {
 		listener      net.Listener
 		packageParser PackageParser
 		processor     Processor
 		client        *Client
 		quit          chan struct{}
-		fastPath      func(cb *CMD)
 	}
 
 	PackageParser interface {
@@ -68,11 +68,11 @@ func newNetConn(conn net.Conn) *netConn {
 }
 
 func NewNetTransport(conf *Conf, packageParser PackageParser, cmdConvert CmdConvert, serverProcessor Processor) *NetTransport {
-	listener, err := net.Listen(conf.Addr.Network(), conf.Addr.String())
+	listener, err := net.Listen(conf.LocalAddr.Network(), conf.LocalAddr.String())
 	if err != nil {
 		panic(fmt.Errorf("init server err : %s", err))
 	}
-	return &NetTransport{
+	t := &NetTransport{
 		// init server
 		listener:      listener,
 		packageParser: packageParser,
@@ -81,6 +81,8 @@ func NewNetTransport(conf *Conf, packageParser PackageParser, cmdConvert CmdConv
 		client: NewClient(withClientCmdConvert(cmdConvert)),
 		quit:   make(chan struct{}),
 	}
+
+	return t
 }
 func (s *NetTransport) Stop() {
 	close(s.quit)

@@ -15,16 +15,24 @@ type (
 	}
 	// ServerProcessor 服务器接口 handler ，提供具体的接口处理逻辑
 	ServerProcessor struct {
-		cmdChan chan *CMD
+		cmdChan  chan *CMD
+		fastPath fastPath
 	}
 )
 
+func (d *ServerProcessor) SetFastPath(cb fastPath) {
+	d.fastPath = cb
+}
+
 // Do ServerProcessor 不关心上层协议，所以不用处理第一个参数（cmdType）
 func (d *ServerProcessor) Do(_ uint8, req interface{}) (resp interface{}, err error) {
-	resCh := make(chan interface{})
+	resCh := make(chan interface{}, 1)
 	cmd := &CMD{
 		Request:  req,
 		Response: resCh,
+	}
+	if d.fastPath != nil && d.fastPath(cmd) {
+		return <-resCh, nil
 	}
 	d.cmdChan <- cmd
 	return <-resCh, nil
@@ -66,6 +74,7 @@ func newProcessorProxy(options ...func(opt *processorOption)) Processor {
 func (p *ProcessorProxy) Do(cmdType uint8, reqBytes interface{}) (respBytes interface{}, err error) {
 	date := reqBytes.([]byte)
 	var req interface{}
+
 	switch cmdType {
 	case CmdVoteRequest:
 		req = new(VoteRequest)

@@ -65,7 +65,7 @@ func (r *Raft) buildSnapShot() (string, error) {
 	req.init()
 	select {
 	case r.fsmSnapshotCh <- req:
-	case <-r.shutDown.ch:
+	case <-r.shutDown.C:
 		return "", ErrShutDown
 	}
 
@@ -80,7 +80,7 @@ func (r *Raft) buildSnapShot() (string, error) {
 	configurationFuture.init()
 	select {
 	case r.configurationGetCh <- configurationFuture:
-	case <-r.shutDown.ch:
+	case <-r.shutDown.C:
 		return "", ErrShutDown
 	}
 	cresp, err := configurationFuture.Response()
@@ -128,7 +128,7 @@ func (r *Raft) runSnapShot() {
 					return r.snapShotStore.Open(id)
 				}, nil)
 			}
-		case <-r.shutDown.ch:
+		case <-r.shutDown.C:
 			return
 		}
 

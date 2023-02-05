@@ -7,6 +7,16 @@ const (
 	NonVoter
 )
 
+type configuration struct {
+	servers []ServerInfo
+}
+type configurations struct {
+	commit      configuration
+	latest      configuration
+	commitIndex uint64
+	latestIndex uint64
+}
+
 // ConfigurationStore provides an interface that can optionally be implemented by FSMs
 // to store configuration updates made in the replicated log. In general this is only
 // necessary for FSMs that mutate durable state directly instead of applying changes
@@ -24,7 +34,7 @@ type ConfigurationStore interface {
 }
 type configurationChangeCommend uint64
 type configurationChangeRequest struct {
-	commend   configurationChangeCommend
+	command   configurationChangeCommend
 	peer      ServerInfo
 	pervIndex uint64
 }
@@ -35,3 +45,17 @@ const (
 	DemoteVoter
 	removeServer
 )
+
+func (c *configuration) Clone() (copy configuration) {
+	copy.servers = append(copy.servers, c.servers...)
+	return
+}
+func (c *configurations) Clone() configurations {
+	res := configurations{
+		commit:      c.commit.Clone(),
+		latest:      c.latest.Clone(),
+		commitIndex: c.commitIndex,
+		latestIndex: c.latestIndex,
+	}
+	return res
+}

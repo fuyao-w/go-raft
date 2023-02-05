@@ -52,10 +52,10 @@ type raftContext struct {
 	state State // 当前状态
 	//votedFor ServerID // 给谁投票了
 
-	lastEntry                       lockItem[lastEntry]
+	lastEntry                       *lockItem[lastEntry]
 	candidateFromLeadershipTransfer bool
 	// funcEg 跟踪与 Raft 相关的 goroutine
-	funcEg errgroup.Group
+	funcEg *errgroup.Group
 }
 
 type lastEntry struct {
@@ -138,12 +138,12 @@ func (r *Raft) waitShutDown() {
 	r.funcEg.Wait()
 }
 
-func (r *Raft) ShutDown() (resp Future[nilRespFuture]) {
+func (r *Raft) ShutDown() (resp defaultFuture) {
 	r.shutDown.state.Action(func(t *bool) {
 		if *t {
 			resp = &shutDownFuture{}
 		} else {
-			close(r.shutDown.ch)
+			close(r.shutDown.C)
 			*t = true
 			r.setShutDown()
 			resp = &shutDownFuture{r}

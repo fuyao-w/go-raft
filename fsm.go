@@ -62,7 +62,7 @@ func (r *Raft) runLogFSM() {
 	}
 	for {
 		select {
-		case <-r.shutDown.ch:
+		case <-r.shutDown.C:
 			return
 		case inter := <-r.fsmMutateCh:
 			switch req := inter.(type) {
@@ -90,9 +90,7 @@ func (r *Raft) runLogFSM() {
 
 }
 
-// fsmRestoreAndMeasure wraps the Restore call on an FSM to consistently measure
-// and report timing metrics. The caller is still responsible for calling Close
-// on the source in all cases.
 func fsmRestoreAndMeasure(fsm LogFSM, source io.ReadCloser, snapshotSize int64) error {
+
 	return fsm.ReStore(source)
 }

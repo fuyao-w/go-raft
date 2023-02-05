@@ -30,11 +30,11 @@ func newSeed() int64 {
 type shutDown struct {
 	dataBus DataBus
 	state   lockItem[bool]
-	ch      chan struct{}
+	C       chan struct{}
 }
 
-// WhatForShutDown 阻塞直到关机
-func (s *shutDown) WhatForShutDown() {
+// WaitForShutDown 阻塞直到关机
+func (s *shutDown) WaitForShutDown() {
 	notify := make(chan os.Signal, 1)
 	// kill 默认会发送 syscall.SIGTERM 信号
 	// kill -2 发送 syscall.SIGINT 信号，我们常用的Ctrl+C就是触发系统SIGINT信号

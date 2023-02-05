@@ -19,7 +19,7 @@ func TestNewSeed(t *testing.T) {
 func TestShutDown(t *testing.T) {
 	s := shutDown{
 		dataBus: DataBus{},
-		ch:      make(chan struct{}),
+		C:       make(chan struct{}),
 	}
 	s.AddCallback(func(event int, param interface{}) {
 		fmt.Println("shutdown")
@@ -27,7 +27,7 @@ func TestShutDown(t *testing.T) {
 	s.AddCallback(func(event int, param interface{}) {
 		fmt.Println("shutdown")
 	})
-	//s.WhatForShutDown()
+	//s.WaitForShutDown()
 }
 func check(cond bool, t *testing.T, args ...any) {
 	if !cond {

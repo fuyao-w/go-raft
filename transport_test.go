@@ -34,7 +34,7 @@ func TestServer(t *testing.T) {
 
 			resp, err := transport.VoteRequest(&ServerInfo{
 				ID:   "!2312",
-				Addr: Config.Addr.String(),
+				Addr: Config.LocalAddr.String(),
 			}, &VoteRequest{
 				RPCHeader: &RPCHeader{
 					ID:   "testID",
