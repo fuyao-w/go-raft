@@ -161,19 +161,15 @@ func NewRaft(config *Conf, logStore LogStore, kvStorage KVStorage, snapShotStore
 			candidateFromLeadershipTransfer: false,
 			funcEg:                          new(errgroup.Group),
 		},
-		fsm:         nil,
-		fsmMutateCh: make(chan interface{}),
-		commitment:  commitment{},
-		rpc: NewNetTransport(config,
-			new(DefaultPackageParser),
-			new(JsonCmdHandler),
-			&ServerProcessor{cmdChan: cmdChan},
-		),
+		fsm:                   nil,
+		fsmMutateCh:           make(chan interface{}),
+		commitment:            commitment{},
+		rpc:                   NewNetTransport(config),
 		cmdChan:               cmdChan,
 		applyCh:               make(chan *LogFuture),
 		followerNotifyCh:      make(chan struct{}),
 		configurationChangeCh: make(chan *configurationChangeFuture),
-		configurationGetCh:    make(chan *configurationGetFuture),
+		configurationsGetCh:   make(chan *configurationsGetFuture),
 		verifyCh:              make(chan *verifyFuture),
 		bootstrapCh:           make(chan *bootstrapFuture),
 		leadershipTransferCh:  make(chan *leadershipTransferFuture),
@@ -208,7 +204,7 @@ func NewRaft(config *Conf, logStore LogStore, kvStorage KVStorage, snapShotStore
 		}
 		raft.processConfigurationLogEntry(tLog)
 	}
-	raft.rpc.SetFastPath(raft.processHeartBeat)
+	raft.rpc.SetHeartbeatFastPath(raft.processHeartBeat)
 	raft.setFollower()
 
 	raft.goFunc(raft.run)
@@ -489,7 +485,7 @@ func (r *Raft) processVote(req *VoteRequest, cmd *CMD) {
 		// 如果是相同轮次的并且，当前最新的所以比远端大直接拒绝
 		return
 	}
-	if r.persistVote(req.Term, string(req.ID)) != nil { // 将最新信息持久化
+	if r.persistVote(req.Term, req.Addr) != nil { // 将最新信息持久化
 		return
 	}
 
@@ -609,7 +605,7 @@ func (r *Raft) cycleFollower() {
 			u.fail(ErrNotLeader)
 		case l := <-r.leadershipTransferCh:
 			l.fail(ErrNotLeader)
-		case c := <-r.configurationGetCh:
+		case c := <-r.configurationsGetCh:
 			c.responded(r.configurations.Clone(), nil)
 
 		case <-r.followerNotifyCh:
@@ -685,9 +681,17 @@ func (r *Raft) sendLatestSnapshot(fr *followerReplication) (err error) {
 	defer snapshot.Close()
 	peer := fr.server.Get()
 
-	resp, err := r.rpc.InstallSnapShot(&peer, &InstallSnapshotRequest{
-		// TODO 参数不全
-	})
+	req := &InstallSnapshotRequest{
+		RPCHeader:          r.buildRPCHeader(nil),
+		SnapShotVersion:    meta.Version,
+		Term:               r.currentTerm,
+		Size:               meta.Size,
+		ConfigurationIndex: meta.configurationIndex,
+		Configuration:      EnecodeConfiguration(meta.configuration),
+		Leader:             r.rpc.EncodeAddr(Ptr(r.leaderInfo.Get())),
+	}
+	req.LastLogIndex, req.LastLogTerm = r.getLastLog()
+	resp, err := r.rpc.InstallSnapShot(&peer, req, snapshot)
 	if resp.Term < r.currentTerm {
 		// 下台
 		return nil
@@ -836,12 +840,12 @@ func (r *Raft) heartbeat(fr *followerReplication, stopHeartBeatCh chan struct{})
 	}
 }
 
-func (r *Raft) persistVote(term uint64, addr string) (err error) {
+func (r *Raft) persistVote(term uint64, addr ServerAddr) (err error) {
 	if err = r.kvStorage.SetUint64(keyLastVoteTerm, r.getCurrentTerm()); err != nil {
 		return
 	}
 
-	if err = r.kvStorage.Set(keyLastVoteCandidate, addr); err != nil {
+	if err = r.kvStorage.Set(keyLastVoteCandidate, string(addr)); err != nil {
 		return
 	}
 	return
@@ -964,7 +968,7 @@ func (r *Raft) cycleCandidate() {
 		case l := <-r.leadershipTransferCh:
 			l.fail(ErrNotLeader)
 			l.fail(ErrNotLeader)
-		case c := <-r.configurationGetCh:
+		case c := <-r.configurationsGetCh:
 			c.responded(r.configurations.Clone(), nil)
 		case b := <-r.bootstrapCh:
 			b.fail(ErrCantBootstrap)
@@ -1123,7 +1127,7 @@ func (r *Raft) appendConfigurationEntry(c *configurationChangeFuture) {
 func checkConfiguration(config configuration) error {
 	var (
 		idSet   = make(map[ServerID]bool, len(config.servers))
-		addrSet = make(map[string]bool, len(config.servers))
+		addrSet = make(map[ServerAddr]bool, len(config.servers))
 		err     = fmt.Errorf
 		voter   int
 	)
@@ -1153,7 +1157,7 @@ func clacNewConfiguration(current configuration, currentIndex uint64, req config
 	}
 	config := current.Clone()
 
-	switch req.commend {
+	switch req.command {
 	case AddVoter:
 		var found bool
 		for i, server := range config.servers {
@@ -1385,7 +1389,7 @@ func (r *Raft) cycleLeader() {
 				r.setFollower()
 
 			}
-		case c := <-r.configurationGetCh:
+		case c := <-r.configurationsGetCh:
 			if r.leadershipTransferInProgress() {
 				c.fail(ErrLeadershipTransferInProgress)
 				return

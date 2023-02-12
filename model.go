@@ -30,6 +30,18 @@ type (
 		VoteGranted bool   `json:"vote_granted"` // 候选人赢得了此张选票时为真
 	}
 	InstallSnapshotRequest struct {
+		*RPCHeader
+		SnapShotVersion
+		Term                      uint64
+		LastLogIndex, LastLogTerm uint64
+		Size                      int64
+		ConfigurationIndex        uint64
+		Configuration             []byte
+		Leader                    []byte
+	}
+	FastTimeOutReq struct {
+	}
+	FastTimeOutResp struct {
 	}
 	InstallSnapshotResponse struct {
 		Success bool
@@ -39,7 +51,7 @@ type (
 		// Suffrage determines whether the server gets a election.
 		Suffrage ServerSuffrage
 		ID       ServerID
-		Addr     string
+		Addr     ServerAddr
 	}
 
 	voteResult struct {
@@ -47,20 +59,21 @@ type (
 		ServerID ServerID
 	}
 
-	ServerID string
+	ServerID   string
+	ServerAddr string
 
 	RPCHeader struct {
 		ID     ServerID
-		Addr   string
+		Addr   ServerAddr
 		ErrMsg string
 	}
 )
 
-func (n *raftContext) clear() {
-	//
-	//n.updateLeaderInfo(func(s *ServerInfo) {
-	//	*s = ServerInfo{}
-	//})
+func (r *Raft) clear() {
+
+	r.updateLeaderInfo(func(s *ServerInfo) {
+		*s = ServerInfo{}
+	})
 	//n.votedFor = ""
 	//n.NextIndex = 0 TODO
 	//n.MatchIndex = 0 TODO

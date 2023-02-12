@@ -28,7 +28,11 @@ type Conf struct {
 	// local node, then we forget all peers and transition into the follower state.
 	// If ShutdownOnRemove is set, we additional shutdown Raft. Otherwise,
 	// we can become a leader of a cluster containing only this node.
-	ShutdownOnRemove bool
+	ShutdownOnRemove   bool
+	MaxPool            int
+	TransportTimeout   time.Duration
+	NetLayer           NetLayer
+	ServerAddrProvider ServerAddrProvider
 }
 
 type Member struct {

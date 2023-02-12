@@ -33,6 +33,24 @@ type shutDown struct {
 	C       chan struct{}
 }
 
+func newShutDown() shutDown {
+	return shutDown{
+		state: lockItem[bool]{},
+		C:     make(chan struct{}),
+	}
+}
+
+func (s *shutDown) done(act func()) {
+	s.state.Action(func(t *bool) {
+		*t = true
+		close(s.C)
+		if act != nil {
+			act()
+		}
+		s.dataBus.Publish(0, nil)
+	})
+}
+
 // WaitForShutDown 阻塞直到关机
 func (s *shutDown) WaitForShutDown() {
 	notify := make(chan os.Signal, 1)
@@ -42,7 +60,7 @@ func (s *shutDown) WaitForShutDown() {
 	// signal.Notify把收到的 syscall.SIGINT或syscall.SIGTERM 信号转发给quit
 	signal.Notify(notify, syscall.SIGINT, syscall.SIGTERM) // 此处不会阻塞
 	<-notify
-	s.dataBus.Publish(0, nil)
+	s.done(nil)
 }
 
 func (s *shutDown) AddCallback(obs observer) {
@@ -70,14 +88,16 @@ func (d *DataBus) Publish(event int, param interface{}) {
 	}
 }
 
-type lockInter interface {
-	time.Time | int | uint64 | ServerInfo | LogEntry | lastEntry | notifyMap | bool
-}
-
 // lockItem 通过锁保护 item 的 访问
-type lockItem[T lockInter] struct {
+type lockItem[T any] struct {
 	item T
 	lock sync.Mutex
+}
+
+func newLockItem[T any](t T) lockItem[T] {
+	return lockItem[T]{
+		item: t,
+	}
 }
 
 func (s *lockItem[T]) Action(act func(t *T)) {
@@ -163,4 +183,8 @@ func sortSlice[S ~uint64](s []S) {
 	sort.Slice(s, func(i, j int) bool {
 		return s[i] < s[j]
 	})
+}
+
+func Ptr[T any](t T) *T {
+	return &t
 }

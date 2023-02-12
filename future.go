@@ -17,13 +17,8 @@ type useSnapShotFuture = func() (SnapShotMeta, io.ReadCloser, error)
 // nilRespFuture Future 默认不需要返回值的类型
 type nilRespFuture = interface{}
 
-// futureInter 返回值的类型
-type futureInter interface {
-	SnapShotFutureResp | configuration | nilRespFuture | useSnapShotFuture | any
-}
-
 // Future 用于异步提交，Response 会同步返回，可以重复调用
-type Future[T futureInter] interface {
+type Future[T any] interface {
 	Response() (T, error)
 }
 
@@ -32,7 +27,7 @@ type defaultFuture = Future[nilRespFuture]
 
 type defaultDeferResponse = deferResponse[nilRespFuture]
 
-type deferResponse[T futureInter] struct {
+type deferResponse[T any] struct {
 	err        error
 	once       *sync.Once
 	timeout    chan time.Time
@@ -153,6 +148,9 @@ type leadershipTransferFuture struct {
 	ServerInfo *ServerInfo
 }
 
+type configurationsGetFuture struct {
+	deferResponse[configurations]
+}
 type configurationGetFuture struct {
 	deferResponse[configuration]
 }

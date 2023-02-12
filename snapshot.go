@@ -76,10 +76,10 @@ func (r *Raft) buildSnapShot() (string, error) {
 
 	defer sresp.fsmSnapShot.Release()
 
-	configurationFuture := new(configurationGetFuture)
+	configurationFuture := new(configurationsGetFuture)
 	configurationFuture.init()
 	select {
-	case r.configurationGetCh <- configurationFuture:
+	case r.configurationsGetCh <- configurationFuture:
 	case <-r.shutDown.C:
 		return "", ErrShutDown
 	}

@@ -17,6 +17,7 @@ var (
 	// ErrAbortedByRestore is returned when a leader fails to commit a log
 	// entry because it's been superseded by a user snapshot restore.
 	ErrAbortedByRestore = errors.New("snapshot restored while committing log")
+	ErrEnqueueTimeout   = errors.New("timed out enqueuing operation")
 )
 
 // Raft 运行上下文
@@ -56,8 +57,8 @@ type Raft struct {
 	followerNotifyCh chan struct{}
 	// configurationChangeCh
 	configurationChangeCh chan *configurationChangeFuture
-	// configurationGetCh 用于从外部安全的获取配置信息
-	configurationGetCh chan *configurationGetFuture
+	// configurationsGetCh 用于从外部安全的获取配置信息
+	configurationsGetCh chan *configurationsGetFuture
 	// verifyCh 用于外部确定当前节点是否还是 leader
 	verifyCh             chan *verifyFuture
 	bootstrapCh          chan *bootstrapFuture
@@ -135,7 +136,7 @@ func (r *Raft) BootstrapCluster(configuration configuration) defaultFuture {
 	return future
 }
 
-func (r *Raft) Leader() string {
+func (r *Raft) Leader() ServerAddr {
 	info := r.leaderInfo.Get()
 	return info.Addr
 }
@@ -188,7 +189,7 @@ func (r *Raft) getLatestConfiguration() configuration {
 	return configuration{}
 }
 
-func (r *Raft) AddPeer(peer string) defaultFuture {
+func (r *Raft) AddPeer(peer ServerAddr) defaultFuture {
 	return r.requestConfigChange(configurationChangeRequest{
 		command: AddVoter,
 		peer: ServerInfo{
@@ -219,7 +220,7 @@ func (r *Raft) requestConfigChange(req configurationChangeRequest, timeout time.
 	}
 }
 
-func (r *Raft) RemovePeer(peer string) defaultFuture {
+func (r *Raft) RemovePeer(peer ServerAddr) defaultFuture {
 	return r.requestConfigChange(configurationChangeRequest{
 		command: removeServer,
 		peer: ServerInfo{
@@ -228,7 +229,7 @@ func (r *Raft) RemovePeer(peer string) defaultFuture {
 	}, 0)
 }
 
-func (r *Raft) AddVoter(id ServerID, address string, prevIndex uint64, timeout time.Duration) IndexFuture {
+func (r *Raft) AddVoter(id ServerID, address ServerAddr, prevIndex uint64, timeout time.Duration) IndexFuture {
 	return r.requestConfigChange(configurationChangeRequest{
 		command: AddVoter,
 		peer: ServerInfo{
@@ -240,7 +241,7 @@ func (r *Raft) AddVoter(id ServerID, address string, prevIndex uint64, timeout t
 	}, timeout)
 }
 
-func (r *Raft) AddNonVoter(id ServerID, address string, prevIndex uint64, timeout time.Duration) IndexFuture {
+func (r *Raft) AddNonVoter(id ServerID, address ServerAddr, prevIndex uint64, timeout time.Duration) IndexFuture {
 	return r.requestConfigChange(configurationChangeRequest{
 		command: AddNonVoter,
 		peer: ServerInfo{
@@ -252,19 +253,19 @@ func (r *Raft) AddNonVoter(id ServerID, address string, prevIndex uint64, timeou
 	}, timeout)
 }
 
-func (r *Raft) RemoveVoter(id ServerID, address string, prevIndex uint64, timeout time.Duration) IndexFuture {
+func (r *Raft) RemoveVoter(id ServerID, addr ServerAddr, prevIndex uint64, timeout time.Duration) IndexFuture {
 	return r.requestConfigChange(configurationChangeRequest{
 		command: removeServer,
 		peer: ServerInfo{
 			Suffrage: 0,
 			ID:       id,
-			Addr:     address,
+			Addr:     addr,
 		},
 		pervIndex: prevIndex,
 	}, timeout)
 }
 
-func (r *Raft) demoteVoter(id ServerID, address string, prevIndex uint64, timeout time.Duration) IndexFuture {
+func (r *Raft) demoteVoter(id ServerID, address ServerAddr, prevIndex uint64, timeout time.Duration) IndexFuture {
 	return r.requestConfigChange(configurationChangeRequest{
 		command: DemoteVoter,
 		peer: ServerInfo{
@@ -286,4 +287,51 @@ func (r *Raft) SnapShot() Future[SnapShotFutureResp] {
 	case r.fsmSnapshotCh <- sf:
 		return sf
 	}
+}
+
+func (r *Raft) LeaderCh() chan bool {
+	return r.leaderCh
+}
+func (r *Raft) LastContact() time.Time {
+	return r.lastContact.Get()
+}
+
+func (r *Raft) LastIndex() uint64 {
+	return r.getLastIndex()
+}
+
+func (r *Raft) LastApplied() uint64 {
+	return r.getLastApplied()
+}
+
+func (r *Raft) LeaderTransfer() defaultFuture {
+	return r.initiateLeadershipTransfer(nil, nil)
+}
+
+func (r *Raft) initiateLeadershipTransfer(id *ServerID, address *ServerAddr) defaultFuture {
+	future := &leadershipTransferFuture{
+		ServerInfo: &ServerInfo{
+
+			ID:   *id,
+			Addr: *address,
+		},
+	}
+	if *id == r.localAddr.ID {
+		future.fail(errors.New("can't transfer to itself"))
+		return future
+	}
+	future.init()
+	select {
+	case r.leadershipTransferCh <- future:
+		return future
+	case <-r.shutDown.C:
+		return &errFuture[nilRespFuture]{ErrShutDown}
+	default:
+		return &errFuture[nilRespFuture]{ErrEnqueueTimeout}
+	}
+}
+
+func (r *Raft) FastTimeOut() {
+	r.setCandidate()
+	r.candidateFromLeadershipTransfer = true
 }
