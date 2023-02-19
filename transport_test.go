@@ -24,9 +24,6 @@ func TestServer(t *testing.T) {
 
 	transport := NewNetTransport(
 		Config,
-		new(DefaultPackageParser),
-		new(JsonCmdHandler),
-		new(testServerProcessor),
 	)
 	go func() {
 		for i := uint64(0); ; i++ {

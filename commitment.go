@@ -9,20 +9,30 @@ type commitment struct {
 	lock        sync.Mutex
 	commitCh    chan struct{}
 	matchIndex  map[ServerID]uint64
-	commitIndex uint64
-	startIndex  uint64
+	commitIndex uint64 // 已提交的索引
+	startIndex  uint64 // leader 任期的的第一个索引
 }
 
 func newCommitment(commitCh chan struct{}, configuration configuration, startIndex uint64) *commitment {
 	return &commitment{
-		commitCh:    commitCh,
-		matchIndex:  map[ServerID]uint64{},
+		commitCh: commitCh,
+		matchIndex: func() (matchIndex map[ServerID]uint64) {
+			matchIndex = map[ServerID]uint64{}
+			for _, server := range configuration.servers {
+				if server.Suffrage == Voter {
+					matchIndex[server.ID] = 0
+				}
+			}
+			return
+		}(),
 		commitIndex: 0,
 		startIndex:  startIndex,
 	}
 }
 
 func (c *commitment) setConfiguration(config configuration) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 	oldMatchIndex := c.matchIndex
 	c.matchIndex = map[ServerID]uint64{}
 	for _, server := range config.servers {

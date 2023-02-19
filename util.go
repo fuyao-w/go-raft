@@ -2,6 +2,7 @@ package go_raft
 
 import (
 	. "github.com/fuyao-w/common-util"
+	"sync/atomic"
 
 	crand "crypto/rand"
 	"fmt"
@@ -135,4 +136,18 @@ func overrideNotifyBool(ch chan bool, v bool) {
 	}
 	// 如果循环两次说明有其他线程在并发投递
 	panic("race:channel was send concurrently")
+}
+
+type AtomicVal[T any] struct {
+	v atomic.Value
+}
+
+func NewAtomicVal[T any]() *AtomicVal[T] {
+	return &AtomicVal[T]{}
+}
+func (a AtomicVal[T]) Load() T {
+	return a.v.Load().(T)
+}
+func (a AtomicVal[T]) Store(t T) {
+	a.v.Store(t)
 }

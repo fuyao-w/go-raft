@@ -97,8 +97,7 @@ func (r *Raft) buildRPCHeader(err error) *RPCHeader {
 }
 
 func (r *Raft) Config() *Conf {
-	c, _ := r.conf.Load().(*Conf)
-	return c
+	return r.conf.Load()
 }
 
 func (r *Raft) SetConfig(c *Conf) {
@@ -123,7 +122,7 @@ func (r *Raft) Start() {
 
 }
 
-func NewRaft(config *Conf, logStore LogStore, kvStorage KVStorage, snapShotStore SnapShotStore) *Raft {
+func NewRaft(config *Conf, logStore LogStore, fsm LogFSM, kvStorage KVStorage, snapShotStore SnapShotStore) *Raft {
 	if err := validateConf(config); err != nil {
 		panic(err)
 	}
@@ -147,7 +146,7 @@ func NewRaft(config *Conf, logStore LogStore, kvStorage KVStorage, snapShotStore
 	cmdChan := make(chan *CMD)
 
 	raft := &Raft{
-		latestConfiguration:  new(atomic.Value),
+		latestConfiguration:  NewAtomicVal[configuration](),
 		logStore:             logStore,
 		kvStorage:            kvStorage,
 		snapShotStore:        snapShotStore,
@@ -162,9 +161,8 @@ func NewRaft(config *Conf, logStore LogStore, kvStorage KVStorage, snapShotStore
 			candidateFromLeadershipTransfer: false,
 			funcEg:                          new(errgroup.Group),
 		},
-		fsm:                   nil,
+		fsm:                   fsm,
 		fsmMutateCh:           make(chan interface{}),
-		commitment:            commitment{},
 		rpc:                   NewNetTransport(config),
 		cmdChan:               cmdChan,
 		applyCh:               make(chan *LogFuture),
@@ -176,14 +174,14 @@ func NewRaft(config *Conf, logStore LogStore, kvStorage KVStorage, snapShotStore
 		leadershipTransferCh:  make(chan *leadershipTransferFuture),
 		userRestoreCh:         make(chan *userRestoreFuture),
 		leaderNotifyCh:        make(chan struct{}),
-		conf:                  new(atomic.Value),
+		conf:                  NewAtomicVal[*Conf](),
 		localAddr:             ServerInfo{},
 		shutDown: shutDown{
 			dataBus: DataBus{},
 			C:       make(chan struct{}),
 		},
 		lastContact:    NewLockItem[time.Time](),
-		leaderState:    nil,
+		leaderState:    new(LeaderState),
 		configurations: configurations{},
 		leaderCh:       make(chan bool),
 		leaderInfo:     NewLockItem[ServerInfo](),
@@ -701,7 +699,7 @@ func (r *Raft) sendLatestSnapshot(fr *followerReplication) (err error) {
 	if resp.Success {
 		// 更新索引
 		fr.nextIndex = meta.Index + 1
-		r.commitment.match(peer.ID, meta.Index)
+		r.leaderState.commitment.match(peer.ID, meta.Index)
 		// 重置失败数
 		fr.failures = 0
 	} else {
@@ -1356,7 +1354,7 @@ func (r *Raft) cycleLeader() {
 			return true
 		case <-r.leaderState.commitCh:
 			oldCommitIndex := r.commitIndex
-			commitIndex := r.commitment.GetCommitIndex()
+			commitIndex := r.leaderState.commitment.GetCommitIndex()
 			r.setCommitIndex(commitIndex)
 			if r.configurations.latestIndex > oldCommitIndex && r.configurations.latestIndex < commitIndex {
 				r.setLatestConfiguration(r.configurations.latest, r.configurations.latestIndex)

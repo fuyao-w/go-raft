@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	. "github.com/fuyao-w/common-util"
-	"sync/atomic"
 	"time"
 )
 
@@ -23,7 +22,7 @@ var (
 
 // Raft 运行上下文
 type Raft struct {
-	latestConfiguration *atomic.Value
+	latestConfiguration *AtomicVal[configuration]
 	// logStore 提供日志操作的能力
 	logStore LogStore
 	// kvStorage 存储一些需要持久化的字段
@@ -47,7 +46,7 @@ type Raft struct {
 	fsmMutateCh chan interface{}
 
 	// commitment 帮助保存，计算已提交的索引
-	commitment commitment
+	//commitment commitment
 	// rpc 提供 RPC 调用能力
 	rpc RpcInterface // RPC 接口，提供了选举，追加日志等功能
 	// cmdChan RPC 命令消息
@@ -68,7 +67,7 @@ type Raft struct {
 	// leaderNotifyCh 当有 leader 相关的配置变更时，通过此通道进行通知
 	leaderNotifyCh chan struct{}
 	// conf  配置
-	conf *atomic.Value
+	conf *AtomicVal[*Conf]
 	// localAddr 当前节点身份和地址信息
 	localAddr ServerInfo
 	// clusterMember 集群的其他成员
@@ -178,16 +177,8 @@ func (r *Raft) VerifyLeader() defaultFuture {
 func (r *Raft) GetConfiguration() *configurationGetFuture {
 	cf := &configurationGetFuture{}
 	cf.init()
-	cf.responded(r.getLatestConfiguration(), nil)
+	cf.responded(r.latestConfiguration.Load(), nil)
 	return cf
-}
-
-func (r *Raft) getLatestConfiguration() configuration {
-	c, ok := r.latestConfiguration.Load().(configuration)
-	if ok {
-		return c
-	}
-	return configuration{}
 }
 
 func (r *Raft) AddPeer(peer ServerAddr) defaultFuture {
