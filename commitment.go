@@ -1,6 +1,7 @@
 package go_raft
 
 import (
+	. "github.com/fuyao-w/common-util"
 	"sync"
 )
 
@@ -53,7 +54,7 @@ func (c *commitment) reCalculate() {
 	for _, idx := range c.matchIndex {
 		matched = append(matched, idx)
 	}
-	sortSlice(matched)
+	SortSlice(matched)
 
 	quorumMatchIndex := matched[len(matched)-1/2]
 	if quorumMatchIndex > c.commitIndex && quorumMatchIndex >= c.startIndex {

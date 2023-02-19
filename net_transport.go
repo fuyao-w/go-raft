@@ -1,6 +1,8 @@
 package go_raft
 
 import (
+	. "github.com/fuyao-w/common-util"
+
 	"bufio"
 	"context"
 	"io"
@@ -29,15 +31,15 @@ type (
 		serverAddrProvider ServerAddrProvider
 		processor          Processor
 		heartbeatFastPath  fastPath
-		TimeoutScale       uint64
-		ctx                lockItem[ctx]
+		TimeoutScale       int64
+		ctx                *LockItem[ctx]
 	}
 	ctx struct {
 		ctx    context.Context
 		cancel context.CancelFunc
 	}
 	connPool struct {
-		pool             lockItem[typConnPool]
+		pool             *LockItem[typConnPool]
 		maxSinglePoolNum int
 	}
 )
@@ -203,12 +205,9 @@ func (n *NetTransport) FastTimeOut(info *ServerInfo, req *FastTimeOutReq) (*Fast
 }
 func newConnPool(maxSinglePoolNum int) *connPool {
 	p := &connPool{
-		pool:             lockItem[typConnPool]{},
+		pool:             NewLockItem[typConnPool](map[ServerAddr][]*netConn{}),
 		maxSinglePoolNum: maxSinglePoolNum,
 	}
-	p.pool.Action(func(t *typConnPool) {
-		*t = map[ServerAddr][]*netConn{}
-	})
 	return p
 }
 func (c *connPool) GetConn(addr ServerAddr) (conn *netConn) {
@@ -249,7 +248,7 @@ func NewNetTransport(conf *Conf) *NetTransport {
 		processor:          newProcessorProxy(),
 		TimeoutScale:       DefaultTimeoutScale,
 		shutDown:           newShutDown(),
-		ctx: newLockItem[ctx](ctx{
+		ctx: NewLockItem(ctx{
 			ctx:    logConnCtx,
 			cancel: cancel,
 		}),

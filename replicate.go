@@ -1,6 +1,8 @@
 package go_raft
 
 import (
+	. "github.com/fuyao-w/common-util"
+
 	"time"
 )
 
@@ -18,10 +20,10 @@ type (
 		triggerDeferRespCh chan *defaultDeferResponse
 		stepDownCh         chan struct{}
 		stopCh             chan uint64
-		server             lockItem[ServerInfo]
-		lastContact        lockItem[time.Time]
+		server             *LockItem[ServerInfo]
+		lastContact        *LockItem[time.Time]
 		allowPipeline      bool
-		notify             lockItem[notifyMap]
+		notify             *LockItem[notifyMap]
 		// notifyCh is notified to send out a heartbeat, which is used to check that
 		// this server is still leader.
 		notifyCh chan struct{}

@@ -3,6 +3,7 @@ package go_raft
 import (
 	"errors"
 	"fmt"
+	. "github.com/fuyao-w/common-util"
 	"sync/atomic"
 	"time"
 )
@@ -75,7 +76,7 @@ type Raft struct {
 	// shutDown 停机组件
 	shutDown shutDown
 	// 上次与leader 联系的时间
-	lastContact *lockItem[time.Time] // 上次与 leader 联系的时间
+	lastContact *LockItem[time.Time] // 上次与 leader 联系的时间
 	// leaderState 状态上下文
 	leaderState *LeaderState
 
@@ -84,7 +85,7 @@ type Raft struct {
 	leaderCh chan bool
 
 	// leader 信息
-	leaderInfo *lockItem[ServerInfo]
+	leaderInfo *LockItem[ServerInfo]
 }
 
 func (r *Raft) restoreSnapShot() {

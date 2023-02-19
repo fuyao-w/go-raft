@@ -1,6 +1,7 @@
 package go_raft
 
 import (
+	. "github.com/fuyao-w/common-util"
 	"golang.org/x/sync/errgroup"
 	"sync/atomic"
 )
@@ -52,7 +53,7 @@ type raftContext struct {
 	state State // 当前状态
 	//votedFor ServerID // 给谁投票了
 
-	lastEntry                       *lockItem[lastEntry]
+	lastEntry                       *LockItem[lastEntry]
 	candidateFromLeadershipTransfer bool
 	// funcEg 跟踪与 Raft 相关的 goroutine
 	funcEg *errgroup.Group
@@ -101,7 +102,7 @@ func (r *raftContext) setLastEntry(term uint64, index uint64) {
 }
 func (r *raftContext) getLastIndex() (index uint64) {
 	entry := r.lastEntry.Get()
-	return max(entry.lastLogIndex, entry.lastSnapShotIndex)
+	return Max(entry.lastLogIndex, entry.lastSnapShotIndex)
 }
 
 func (r *raftContext) getCommitIndex() uint64 {

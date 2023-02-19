@@ -1,2 +1,4 @@
+github.com/fuyao-w/common-util v0.0.0-20230219042157-97d259c5fad6 h1:mbHRVm4AV80MXhU/noO43voLnv+2PNPXAT0gYoQcGTw=
+github.com/fuyao-w/common-util v0.0.0-20230219042157-97d259c5fad6/go.mod h1:xk1An8F50mqK3vagpQPpK39GzskfOA8eODpPZL2lQjU=
 golang.org/x/sync v0.1.0 h1:wsuoTGHzEhffawBOhz5CYhcrV4IdKZbEyZjBMuTp12o=
 golang.org/x/sync v0.1.0/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=

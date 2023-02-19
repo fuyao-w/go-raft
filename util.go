@@ -1,6 +1,8 @@
 package go_raft
 
 import (
+	. "github.com/fuyao-w/common-util"
+
 	crand "crypto/rand"
 	"fmt"
 	"math"
@@ -8,8 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
-	"sort"
-	"sync"
+
 	"syscall"
 	"time"
 )
@@ -29,13 +30,13 @@ func newSeed() int64 {
 // shutDown 处理关机逻辑，并提供回调信息
 type shutDown struct {
 	dataBus DataBus
-	state   lockItem[bool]
+	state   *LockItem[bool]
 	C       chan struct{}
 }
 
 func newShutDown() shutDown {
 	return shutDown{
-		state: lockItem[bool]{},
+		state: NewLockItem[bool](),
 		C:     make(chan struct{}),
 	}
 }
@@ -88,48 +89,6 @@ func (d *DataBus) Publish(event int, param interface{}) {
 	}
 }
 
-// lockItem 通过锁保护 item 的 访问
-type lockItem[T any] struct {
-	item T
-	lock sync.Mutex
-}
-
-func newLockItem[T any](t T) lockItem[T] {
-	return lockItem[T]{
-		item: t,
-	}
-}
-
-func (s *lockItem[T]) Action(act func(t *T)) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-	act(&s.item)
-}
-func (s *lockItem[T]) Get() T {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-	return s.item
-}
-func (s *lockItem[T]) Set(t T) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-	s.item = t
-}
-
-func max[T uint64 | time.Duration](a, b T) T {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func min[T uint64 | time.Duration](a, b T) T {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // randomTimeout 返回 t 到 2 x t 时间的随机时间
 func randomTimeout(t time.Duration) <-chan time.Time {
 	if t == 0 {
@@ -176,15 +135,4 @@ func overrideNotifyBool(ch chan bool, v bool) {
 	}
 	// 如果循环两次说明有其他线程在并发投递
 	panic("race:channel was send concurrently")
-}
-
-// sortSlice 小 -> 大
-func sortSlice[S ~uint64](s []S) {
-	sort.Slice(s, func(i, j int) bool {
-		return s[i] < s[j]
-	})
-}
-
-func Ptr[T any](t T) *T {
-	return &t
 }

@@ -1,6 +1,8 @@
 package go_raft
 
 import (
+	. "github.com/fuyao-w/common-util"
+
 	"errors"
 	"fmt"
 	"golang.org/x/sync/errgroup"
@@ -42,7 +44,7 @@ func TestLock(t *testing.T) {
 			t.FailNow()
 		}
 	}
-	l := lockItem[ServerInfo]{}
+	l := LockItem[ServerInfo]{}
 	t.Log(l.Get())
 	target := ServerInfo{
 		Suffrage: 1,
@@ -60,7 +62,7 @@ func TestLock(t *testing.T) {
 
 func TestSort(t *testing.T) {
 	s := []uint64{5, 1, 10, 2, 7, 11, 3}
-	sortSlice(s)
+	SortSlice(s)
 	for i, u := range s {
 		if i == 0 {
 			continue

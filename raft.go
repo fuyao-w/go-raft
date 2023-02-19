@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	. "github.com/fuyao-w/common-util"
 	"golang.org/x/sync/errgroup"
 	"io"
 	"log"
@@ -157,7 +158,7 @@ func NewRaft(config *Conf, logStore LogStore, kvStorage KVStorage, snapShotStore
 			commitIndex:                     0,
 			lastApplied:                     0,
 			state:                           0,
-			lastEntry:                       new(lockItem[lastEntry]),
+			lastEntry:                       NewLockItem[lastEntry](),
 			candidateFromLeadershipTransfer: false,
 			funcEg:                          new(errgroup.Group),
 		},
@@ -181,11 +182,11 @@ func NewRaft(config *Conf, logStore LogStore, kvStorage KVStorage, snapShotStore
 			dataBus: DataBus{},
 			C:       make(chan struct{}),
 		},
-		lastContact:    new(lockItem[time.Time]),
+		lastContact:    NewLockItem[time.Time](),
 		leaderState:    nil,
 		configurations: configurations{},
 		leaderCh:       make(chan bool),
-		leaderInfo:     new(lockItem[ServerInfo]),
+		leaderInfo:     NewLockItem[ServerInfo](),
 	}
 	raft.SetConfig(config)
 	raft.shutDown.AddCallback(func(event int, param interface{}) {
@@ -372,7 +373,7 @@ func (r *Raft) processAppendEntries(req *AppendEntryRequest, cmd *CMD) {
 	updateConfiguration := func() error {
 		_, lastIndex = r.getLastLogEntry()
 		if req.LeaderCommit > 0 && req.LeaderCommit > r.commitIndex {
-			idx := min(req.LeaderCommit, lastIndex)
+			idx := Min(req.LeaderCommit, lastIndex)
 			r.commitIndex = idx
 			if r.configurations.latestIndex <= idx {
 				r.setCommittedConfiguration(r.configurations.latest, idx)
@@ -564,7 +565,7 @@ func (r *Raft) checkLeadership() (bool, time.Duration) {
 			continue
 		}
 		contacted++
-		maxDiff = max(maxDiff, sub)
+		maxDiff = Max(maxDiff, sub)
 	}
 	return contacted >= r.quorumSize(), maxDiff
 }
@@ -652,7 +653,7 @@ func (r *Raft) buildAppendEntriesReq(fr *followerReplication, followerNextIndex,
 	}
 	setEntries := func() error {
 		maxAppendEntries := uint64(r.Config().MaxAppendEntries)
-		maxIndex := min(followerNextIndex+maxAppendEntries-1, leaderLastIndex)
+		maxIndex := Min(followerNextIndex+maxAppendEntries-1, leaderLastIndex)
 		logs, err := r.logStore.GetLogRange(followerNextIndex, maxIndex)
 		req.Entries = append(req.Entries, logs...)
 		return err
@@ -1023,8 +1024,9 @@ func (r *Raft) startStopReplicate() {
 					//nextIndex:   r.NextIndex,
 					stepDownCh:  r.leaderState.stepDown,
 					stopCh:      nil,
-					server:      lockItem[ServerInfo]{item: server},
-					lastContact: lockItem[time.Time]{},
+					server:      NewLockItem(server),
+					lastContact: NewLockItem[time.Time](),
+					notify:      NewLockItem(notifyMap{}),
 				})
 			})
 
@@ -1384,7 +1386,7 @@ func (r *Raft) cycleLeader() {
 			}
 		case <-leaderShipCh:
 			if keep, maxDiff := r.checkLeadership(); keep {
-				leaderShipCh = time.After(max(lst-maxDiff, minLeaderShipTimeout))
+				leaderShipCh = time.After(Max(lst-maxDiff, minLeaderShipTimeout))
 			} else {
 				r.setFollower()
 

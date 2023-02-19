@@ -1,6 +1,9 @@
 package go_raft
 
-import "io"
+import (
+	. "github.com/fuyao-w/common-util"
+	"io"
+)
 
 type (
 	SnapShotStore interface {
@@ -51,7 +54,7 @@ func (r *Raft) compactLogEntries(index uint64) error {
 		return nil
 	}
 
-	maxLogIndex := min(index, lastIndex-trailingLogs)
+	maxLogIndex := Min(index, lastIndex-trailingLogs)
 
 	if minLogIndex > maxLogIndex {
 		return nil
