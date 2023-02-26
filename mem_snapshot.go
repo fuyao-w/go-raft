@@ -14,6 +14,11 @@ type memSnapshot struct {
 	has    bool
 	sync.Mutex
 }
+
+func newMemSnapShot() *memSnapshot {
+	return &memSnapshot{}
+}
+
 type memSnapshotSink struct {
 	meta *SnapShotMeta
 	buf  *bytes.Buffer
