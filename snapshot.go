@@ -7,10 +7,9 @@ import (
 
 type (
 	SnapShotStore interface {
-		Open(id string) (SnapShotMeta, io.ReadCloser, error)
+		Open(id string) (*SnapShotMeta, io.ReadCloser, error)
 		List() ([]*SnapShotMeta, error)
-		Create(version SnapShotVersion, index, tem uint64, configuration configuration,
-			configurationIndex uint64, rpc RpcInterface) (SnapShotSink, error)
+		Create(version SnapShotVersion, index, term uint64, configuration configuration, configurationIndex uint64, rpc RpcInterface) (SnapShotSink, error)
 	}
 	SnapShotSink interface {
 		io.WriteCloser
