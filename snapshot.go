@@ -126,7 +126,7 @@ func (r *Raft) runSnapShot() {
 			if id, err := r.buildSnapShot(); err != nil {
 				fu.fail(err)
 			} else {
-				fu.responded(func() (meta SnapShotMeta, closer io.ReadCloser, err error) {
+				fu.responded(func() (meta *SnapShotMeta, closer io.ReadCloser, err error) {
 					return r.snapShotStore.Open(id)
 				}, nil)
 			}

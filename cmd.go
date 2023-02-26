@@ -7,6 +7,7 @@ import (
 type (
 	Processor interface {
 		Do(cmdType, interface{}) (interface{}, error)
+		SetFastPath(cb fastPath)
 	}
 	// ProcessorProxy 服务器接口 handler 代理，提供将序列化数据，解析成接口 struct 指针的功能
 	ProcessorProxy struct {
@@ -19,6 +20,9 @@ type (
 	}
 )
 
+func (d *ProcessorProxy) SetFastPath(cb fastPath) {
+	d.Processor.SetFastPath(cb)
+}
 func (d *ServerProcessor) SetFastPath(cb fastPath) {
 	d.fastPath = cb
 }
@@ -52,9 +56,11 @@ func withCmdConvert(c CmdConvert) func(opt *processorOption) {
 		opt.CmdConvert = c
 	}
 }
-func newProcessorProxy(options ...func(opt *processorOption)) Processor {
+func newProcessorProxy(cmdCh chan *CMD, options ...func(opt *processorOption)) Processor {
 	proxy := &ProcessorProxy{
-		Processor: new(ServerProcessor),
+		Processor: &ServerProcessor{
+			cmdChan: cmdCh,
+		},
 	}
 	var opt processorOption
 	for _, do := range options {

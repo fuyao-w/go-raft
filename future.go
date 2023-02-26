@@ -13,7 +13,7 @@ var (
 	FutureErrNotLeader = errors.New("not leader")
 )
 
-type useSnapShotFuture = func() (SnapShotMeta, io.ReadCloser, error)
+type useSnapShotFuture = func() (*SnapShotMeta, io.ReadCloser, error)
 
 // nilRespFuture Future 默认不需要返回值的类型
 type nilRespFuture = interface{}

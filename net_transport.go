@@ -25,7 +25,7 @@ type (
 	NetTransport struct {
 		shutDown           shutDown
 		timeout            time.Duration
-		cmdCHan            chan *CMD
+		cmdChan            chan *CMD
 		netLayer           NetLayer
 		connPoll           *connPool
 		serverAddrProvider ServerAddrProvider
@@ -57,7 +57,7 @@ func (n *NetTransport) LocalAddr() ServerAddr {
 }
 
 func (n *NetTransport) Consumer() <-chan *CMD {
-	return n.cmdCHan
+	return n.cmdChan
 }
 
 func (n *NetTransport) getServerAddr(info *ServerInfo) ServerAddr {
@@ -196,7 +196,7 @@ func (n *NetTransport) InstallSnapShot(info *ServerInfo, request *InstallSnapsho
 }
 
 func (n *NetTransport) SetHeartbeatFastPath(cb fastPath) {
-	n.heartbeatFastPath = cb
+	n.processor.SetFastPath(cb)
 }
 
 func (n *NetTransport) FastTimeOut(info *ServerInfo, req *FastTimeOutReq) (*FastTimeOutResp, error) {
@@ -238,14 +238,15 @@ func (n *netConn) Close() {
 }
 
 func NewNetTransport(conf *Conf) *NetTransport {
+	cmdCh := make(chan *CMD)
 	logConnCtx, cancel := context.WithCancel(context.Background())
 	t := &NetTransport{
 		timeout:            conf.TransportTimeout,
-		cmdCHan:            make(chan *CMD),
+		cmdChan:            cmdCh,
 		netLayer:           conf.NetLayer,
 		connPoll:           newConnPool(conf.MaxPool),
 		serverAddrProvider: conf.ServerAddrProvider,
-		processor:          newProcessorProxy(),
+		processor:          newProcessorProxy(cmdCh),
 		TimeoutScale:       DefaultTimeoutScale,
 		shutDown:           newShutDown(),
 		ctx: NewLockItem(ctx{
