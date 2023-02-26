@@ -2,6 +2,7 @@ package go_raft
 
 import (
 	"errors"
+	common_util "github.com/fuyao-w/common-util"
 	"io"
 	"sync"
 	"time"
@@ -69,10 +70,10 @@ func (d *deferResponse[T]) responded(resp T, err error) {
 }
 
 func (d *deferResponse[T]) success() {
-	d.responded(nil, nil)
+	d.responded(common_util.Zero[T](), nil)
 }
 func (d *deferResponse[T]) fail(err error) {
-	d.responded(nil, err)
+	d.responded(common_util.Zero[T](), err)
 }
 
 type AppendEntriesFuture interface {
