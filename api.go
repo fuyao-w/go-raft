@@ -18,6 +18,8 @@ var (
 	// entry because it's been superseded by a user snapshot restore.
 	ErrAbortedByRestore = errors.New("snapshot restored while committing log")
 	ErrEnqueueTimeout   = errors.New("timed out enqueuing operation")
+	ErrTimeout          = errors.New("time out")
+	ErrPipelineShutdown = errors.New("append pipeline closed")
 )
 
 // Raft 运行上下文
