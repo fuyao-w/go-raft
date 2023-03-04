@@ -25,6 +25,11 @@ type NetLayer interface {
 }
 
 type (
+	WithPeers interface {
+		Connect(addr ServerAddr, rpc RpcInterface)
+		Disconnect(addr ServerAddr)
+		DisconnectAll()
+	}
 	fastPath func(cb *CMD) bool
 
 	PackageParser interface {

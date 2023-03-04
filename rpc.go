@@ -9,7 +9,7 @@ type (
 	CMD     struct {
 		CmdType  cmdType
 		Request  any
-		Reader   io.Reader // 安装快照的时候用
+		Reader   io.Reader // in memory 安装快照的时候用
 		Response chan any
 	}
 	RpcInterface interface {

@@ -1,6 +1,7 @@
 package go_raft
 
 import (
+	"container/list"
 	"errors"
 	"io"
 	"sync"
@@ -11,30 +12,81 @@ type memRPC struct {
 	sync.Mutex
 	consumerCh chan *CMD
 	localAddr  ServerAddr
-	peerMap    map[ServerAddr]*memRPC
-	pipeline   []*memPipeline
+	peerMap    map[ServerAddr]RpcInterface
+	pipeline   list.List
 	timeout    time.Duration
-	processor  Processor
 	shutDown   shutDown
+	fastPath   fastPath
+}
+
+func newMemRpc() *memRPC {
+	return &memRPC{
+		localAddr:  ServerAddr(generateUUID()),
+		consumerCh: make(chan *CMD),
+		peerMap:    map[ServerAddr]RpcInterface{},
+		timeout:    time.Second,
+		shutDown:   newShutDown(),
+	}
+}
+
+func (m *memRPC) Connect(addr ServerAddr, rpc RpcInterface) {
+	m.Lock()
+	defer m.Unlock()
+	if _, ok := m.peerMap[addr]; ok {
+		return
+	}
+	m.peerMap[addr] = rpc
+}
+
+func (m *memRPC) Disconnect(addr ServerAddr) {
+	m.Lock()
+	defer m.Unlock()
+	delete(m.peerMap, addr)
+	for e := m.pipeline.Front(); e != nil; e.Next() {
+		if p := e.Value.(*menAppendEntryPipeline); p.peer.localAddr == addr {
+			m.pipeline.Remove(e)
+		}
+	}
+}
+
+func (m *memRPC) DisconnectAll() {
+	m.Lock()
+	defer m.Unlock()
+	m.peerMap = map[ServerAddr]RpcInterface{}
+	for e := m.pipeline.Front(); e != nil; e = e.Next() {
+		e.Value.(*menAppendEntryPipeline).Close()
+	}
+	m.pipeline.Init()
 }
 
 type menAppendEntryPipeline struct {
 	sync.Mutex
-	peer, trans  *memRPC
-	doneCh       chan AppendEntriesFuture
+	peer, rpc    *memRPC
+	processedCh  chan AppendEntriesFuture
 	inProgressCh chan *memAppendEntriesInflight
-	shutDown     shutDown
+	shutDown     chan struct{}
 }
+
 type memAppendEntriesInflight struct {
 	af  *appendEntriesFuture
 	cmd *CMD
 }
 
+func newMenAppendEntryPipeline(peer, rpc *memRPC) *menAppendEntryPipeline {
+	return &menAppendEntryPipeline{
+		peer:         peer,
+		rpc:          rpc,
+		shutDown:     make(chan struct{}),
+		inProgressCh: make(chan *memAppendEntriesInflight),
+		processedCh:  make(chan AppendEntriesFuture),
+	}
+}
+
 func (pipe *menAppendEntryPipeline) decodeResponse() {
-	timeout := pipe.trans.timeout
+	timeout := pipe.rpc.timeout
 	for {
 		select {
-		case <-pipe.shutDown.C:
+		case <-pipe.shutDown:
 			return
 		case inflight := <-pipe.inProgressCh:
 			var timeoutCh <-chan time.Time
@@ -46,86 +98,77 @@ func (pipe *menAppendEntryPipeline) decodeResponse() {
 				resp := rpcResp.(*AppendEntryResponse)
 				inflight.af.responded(resp, nil)
 				select {
-				case pipe.doneCh <- inflight.af:
-				case <-pipe.shutDown.C:
+				case pipe.processedCh <- inflight.af:
+				case <-pipe.shutDown:
 					return
 				}
 			case <-timeoutCh:
 				inflight.af.responded(nil, ErrTimeout)
 				select {
-				case pipe.doneCh <- inflight.af:
-				case <-pipe.shutDown.C:
+				case pipe.processedCh <- inflight.af:
+				case <-pipe.shutDown:
 					return
 				}
-			case <-pipe.shutDown.C:
+			case <-pipe.shutDown:
 				return
 			}
 		}
 	}
 }
 func (pipe *menAppendEntryPipeline) AppendEntries(request *AppendEntryRequest) (AppendEntriesFuture, error) {
-	pipe.Lock()
-	defer pipe.Unlock()
-	af := newAppendEntriesFuture(request)
-	var timeout <-chan time.Time
-	if t := pipe.trans.timeout; t > 0 {
+	var (
+		af      = newAppendEntriesFuture(request)
+		timeout <-chan time.Time
+	)
+	if t := pipe.rpc.timeout; t > 0 {
 		timeout = time.After(t)
 	}
 
 	cmd := CMD{
-		CmdType:  CmdAppendEntryPipeline,
+		CmdType:  CmdAppendEntry,
 		Request:  request,
 		Response: make(chan interface{}, 1),
 	}
+
 	select {
 	case pipe.peer.consumerCh <- &cmd:
 	case <-timeout:
 		return nil, ErrTimeout
-	case <-pipe.shutDown.C:
+	case <-pipe.shutDown:
 		return nil, ErrShutDown
 	}
 	select {
-	case pipe.inProgressCh <- &memAppendEntriesInflight{af: af}:
-	case <-pipe.shutDown.C:
+	case pipe.inProgressCh <- &memAppendEntriesInflight{af: af, cmd: &cmd}:
+	case <-pipe.shutDown:
 		return nil, ErrPipelineShutdown
 	}
 	return af, nil
 }
 
 func (pipe *menAppendEntryPipeline) Consumer() <-chan AppendEntriesFuture {
-	return pipe.doneCh
+	return pipe.processedCh
 }
 
 func (pipe *menAppendEntryPipeline) Close() error {
+	close(pipe.shutDown)
 	return nil
 }
 
-func newMemRpc() *memRPC {
-	cmdCh := make(chan *CMD)
-	return &memRPC{
-		consumerCh: cmdCh,
-		processor:  newProcessorProxy(cmdCh),
-		peerMap:    map[ServerAddr]*memRPC{},
-		timeout:    time.Second,
-	}
-}
 func (m *memRPC) getPeer(addr ServerAddr) *memRPC {
 	m.Lock()
 	defer m.Unlock()
-	return m.peerMap[addr]
-}
-
-type memPipeline struct {
+	return m.peerMap[addr].(*memRPC)
 }
 
 func (m *memRPC) Consumer() <-chan *CMD {
 	return m.consumerCh
 }
-func (m *memRPC) doRpc(peer *memRPC, request interface{}) (interface{}, error) {
+func (m *memRPC) doRpc(cmdType cmdType, peer *memRPC, request interface{}, reader io.Reader) (interface{}, error) {
 	timeout := m.timeout
 	cmd := &CMD{
-		CmdType:  0,
+		CmdType:  cmdType,
 		Request:  request,
+		Reader:   reader,
 		Response: make(chan interface{}),
 	}
 	now := time.Now()
@@ -144,7 +187,7 @@ func (m *memRPC) doRpc(peer *memRPC, request interface{}) (interface{}, error) {
 }
 
 func (m *memRPC) VoteRequest(info *ServerInfo, request *VoteRequest) (*VoteResponse, error) {
-	resp, err := m.doRpc(m.getPeer(info.Addr), request)
+	resp, err := m.doRpc(CmdVoteRequest, m.getPeer(info.Addr), request, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +195,7 @@ func (m *memRPC) VoteRequest(info *ServerInfo, request *VoteRequest) (*VoteRespo
 }
 
 func (m *memRPC) AppendEntries(info *ServerInfo, request *AppendEntryRequest) (*AppendEntryResponse, error) {
-	resp, err := m.doRpc(m.getPeer(info.Addr), request)
+	resp, err := m.doRpc(CmdAppendEntry, m.getPeer(info.Addr), request, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -160,24 +203,31 @@ func (m *memRPC) AppendEntries(info *ServerInfo, request *AppendEntryRequest) (*
 }
 
 func (m *memRPC) AppendEntryPipeline(info *ServerInfo) (AppendEntryPipeline, error) {
-	pipe := &menAppendEntryPipeline{
-		peer: m.getPeer(info.Addr),
-	}
+	peer := m.getPeer(info.Addr)
+	m.Lock()
+	defer m.Unlock()
+
+	pipe := newMenAppendEntryPipeline(peer, m)
+	m.pipeline.PushBack(pipe)
 	go pipe.decodeResponse()
 	return pipe, nil
 }
 
 func (m *memRPC) InstallSnapShot(info *ServerInfo, request *InstallSnapshotRequest, reader io.Reader) (*InstallSnapshotResponse, error) {
-	//TODO implement me
-	panic("implement me")
+	peer := m.getPeer(info.Addr)
+	resp, err := m.doRpc(CmdInstallSnapshot, peer, request, reader)
+	if err != nil {
+		return nil, err
+	}
+	return resp.(*InstallSnapshotResponse), nil
 }
 
 func (m *memRPC) SetHeartbeatFastPath(cb fastPath) {
-	m.processor.SetFastPath(cb)
+	m.fastPath = cb
 }
 
 func (m *memRPC) FastTimeOut(info *ServerInfo, request *FastTimeOutReq) (*FastTimeOutResp, error) {
-	resp, err := m.doRpc(m.getPeer(info.Addr), request)
+	resp, err := m.doRpc(CmdFastTimeout, m.getPeer(info.Addr), request, nil)
 	if err != nil {
 		return nil, err
 	}
