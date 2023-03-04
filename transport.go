@@ -18,6 +18,7 @@ const (
 // DefaultTimeoutScale is the default TimeoutScale in a NetworkTransport.
 const DefaultTimeoutScale = 256 * 1024 // 256KB
 
+// NetLayer 网络层抽象
 type NetLayer interface {
 	net.Listener
 	// Dial is used to create a new outgoing connection

@@ -64,7 +64,7 @@ type menAppendEntryPipeline struct {
 	peer, rpc    *memRPC
 	processedCh  chan AppendEntriesFuture
 	inProgressCh chan *memAppendEntriesInflight
-	shutDown     chan struct{}
+	closeCh      chan struct{}
 }
 
 type memAppendEntriesInflight struct {
@@ -76,7 +76,7 @@ func newMenAppendEntryPipeline(peer, rpc *memRPC) *menAppendEntryPipeline {
 	return &menAppendEntryPipeline{
 		peer:         peer,
 		rpc:          rpc,
-		shutDown:     make(chan struct{}),
+		closeCh:      make(chan struct{}),
 		inProgressCh: make(chan *memAppendEntriesInflight),
 		processedCh:  make(chan AppendEntriesFuture),
 	}
@@ -86,7 +86,7 @@ func (pipe *menAppendEntryPipeline) decodeResponse() {
 	timeout := pipe.rpc.timeout
 	for {
 		select {
-		case <-pipe.shutDown:
+		case <-pipe.closeCh:
 			return
 		case inflight := <-pipe.inProgressCh:
 			var timeoutCh <-chan time.Time
@@ -99,17 +99,17 @@ func (pipe *menAppendEntryPipeline) decodeResponse() {
 				inflight.af.responded(resp, nil)
 				select {
 				case pipe.processedCh <- inflight.af:
-				case <-pipe.shutDown:
+				case <-pipe.closeCh:
 					return
 				}
 			case <-timeoutCh:
 				inflight.af.responded(nil, ErrTimeout)
 				select {
 				case pipe.processedCh <- inflight.af:
-				case <-pipe.shutDown:
+				case <-pipe.closeCh:
 					return
 				}
-			case <-pipe.shutDown:
+			case <-pipe.closeCh:
 				return
 			}
 		}
@@ -134,12 +134,12 @@ func (pipe *menAppendEntryPipeline) AppendEntries(request *AppendEntryRequest) (
 	case pipe.peer.consumerCh <- &cmd:
 	case <-timeout:
 		return nil, ErrTimeout
-	case <-pipe.shutDown:
+	case <-pipe.closeCh:
 		return nil, ErrShutDown
 	}
 	select {
 	case pipe.inProgressCh <- &memAppendEntriesInflight{af: af, cmd: &cmd}:
-	case <-pipe.shutDown:
+	case <-pipe.closeCh:
 		return nil, ErrPipelineShutdown
 	}
 	return af, nil
@@ -150,7 +150,7 @@ func (pipe *menAppendEntryPipeline) Consumer() <-chan AppendEntriesFuture {
 }
 
 func (pipe *menAppendEntryPipeline) Close() error {
-	close(pipe.shutDown)
+	close(pipe.closeCh)
 	return nil
 }
 

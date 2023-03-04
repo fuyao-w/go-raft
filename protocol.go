@@ -16,23 +16,22 @@ const (
 	magic = 0x3
 )
 
-type DefaultPackageParser struct {
-}
+type DefaultPackageParser struct{}
 
 var defaultPackageParser = new(DefaultPackageParser)
 
 func (d *DefaultPackageParser) Encode(writer *bufio.Writer, cmdType cmdType, data []byte) (err error) {
-	onceErr := func(e error) {
-		if e != nil && err == nil {
-			err = e
+	for _, f := range []func() error{
+		func() error { return writer.WriteByte(magic) },                                // magic
+		func() error { return writer.WriteByte(byte(cmdType)) },                        // 命令类型
+		func() error { _, e := writer.WriteString(strconv.Itoa(len(data))); return e }, // 包体长度
+		func() error { return writer.WriteByte(delim) },                                // 分割符
+		func() error { _, e := writer.Write(data); return e },                          // 包体
+	} {
+		if err = f(); err != nil {
+			return
 		}
 	}
-	_ = onceErr
-	writer.WriteByte(magic)                     // magic
-	writer.WriteByte(byte(cmdType))             // 命令类型
-	writer.WriteString(strconv.Itoa(len(data))) // 包体长度
-	writer.WriteByte(delim)                     // 分割符
-	writer.Write(data)                          // 包体
 	return err
 }
 

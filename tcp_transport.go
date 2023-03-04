@@ -10,7 +10,7 @@ type TcpLayer struct {
 	advertise net.Addr
 }
 
-func newTcpLayer(l net.Listener, advertise net.Addr) NetLayer {
+func NewTcpLayer(l net.Listener, advertise net.Addr) NetLayer {
 	return &TcpLayer{
 		listener:  l,
 		advertise: advertise,

@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	. "github.com/fuyao-w/common-util"
-	"golang.org/x/sync/errgroup"
 	"io"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	. "github.com/fuyao-w/common-util"
+	"golang.org/x/sync/errgroup"
 )
 
 func (r *Raft) getLeaderInfo() ServerInfo {
@@ -118,8 +119,6 @@ type LeaderState struct {
 
 func (r *Raft) Start() {
 	go r.shutDown.WaitForShutDown()
-	//go r.rpc.Start()
-
 }
 
 func NewRaft(config *Conf, logStore LogStore, fsm LogFSM, kvStorage KVStorage, snapShotStore SnapShotStore) *Raft {
@@ -223,7 +222,6 @@ func (r *Raft) run() {
 	for {
 		select {
 		case <-r.shutDown.C:
-			r.leaderInfo.Set(ServerInfo{})
 			return
 		default:
 			r.tick()
@@ -239,17 +237,19 @@ func (r *Raft) setState(newState State) {
 	atomic.StoreUint64((*uint64)(&r.state), (uint64)(newState))
 }
 
-func (r *Raft) tick() {
-	switch r.getState() {
-	case Follower:
-		r.cycleFollower()
-	case Candidate:
-		r.cycleCandidate()
-	case Leader:
-		r.cycleLeader()
-	case ShutDown:
-	}
-}
+//func (r *Raft) tick() {
+//	switch r.getState() {
+//	case Follower:
+//		r.cycleFollower()
+//	case Candidate:
+//		r.cycleCandidate()
+//	case Leader:
+//		r.cycleLeader()
+//	case ShutDown:
+//	default:
+//		panic("UNKNOWN STATE")
+//	}
+//}
 
 func (r *Raft) setCommittedConfiguration(c configuration, index uint64) {
 	r.configurations.commit = c
@@ -257,7 +257,7 @@ func (r *Raft) setCommittedConfiguration(c configuration, index uint64) {
 }
 func (r *Raft) setLatestConfiguration(c configuration, i uint64) {
 	r.configurations.latest = c
-	r.configurations.commitIndex = i
+	r.configurations.latestIndex = i
 	r.latestConfiguration.Store(c.Clone())
 }
 
@@ -924,19 +924,23 @@ func (r *Raft) memberCount() int {
 func (r *Raft) setFollower() {
 	r.clear()
 	r.state.setState(Follower)
+	r.tick = r.cycleFollower
 }
 func (r *Raft) setShutDown() {
 	r.clear()
 	r.state.setState(ShutDown)
+	r.tick = func() {}
 }
 func (r *Raft) setCandidate() {
 	r.clear()
 	r.state.setState(Candidate)
+	r.tick = r.cycleCandidate
 }
 func (r *Raft) setLeader() {
 	r.clear()
 	r.state.setState(Leader)
 	r.leaderInfo.Set(r.localAddr)
+	r.tick = r.cycleLeader
 }
 
 func (r *Raft) cycleCandidate() {

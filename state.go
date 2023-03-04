@@ -57,6 +57,7 @@ type raftContext struct {
 	candidateFromLeadershipTransfer bool
 	// funcEg 跟踪与 Raft 相关的 goroutine
 	funcEg *errgroup.Group
+	tick   func() // 每个状态所对应的函数
 }
 
 type lastEntry struct {
