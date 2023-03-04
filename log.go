@@ -14,14 +14,14 @@ type (
 	LogType uint8
 	// LogEntry 日志条目
 	LogEntry struct {
+		// Type 当前日志的类型
+		Type LogType `json:"type"`
+		// Index 当前日志写入的索引
+		Index uint64 `json:"index"`
 		// Term 当前日志写入时的任期
 		Term uint64 `json:"term"`
 		// Data 当前日志写入的内容
 		Data []byte `json:"data"`
-		// Index 当前日志写入的索引
-		Index uint64 `json:"index"`
-		// Type 当前日志的类型
-		Type LogType `json:"type"`
 		// CreatedAt 当前日志的创建爱时间
 		CreatedAt time.Time `json:"created_at"`
 	}

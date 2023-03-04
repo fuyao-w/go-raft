@@ -20,6 +20,7 @@ var (
 	ErrEnqueueTimeout   = errors.New("timed out enqueuing operation")
 	ErrTimeout          = errors.New("time out")
 	ErrPipelineShutdown = errors.New("append pipeline closed")
+	ErrNotVoter         = errors.New("not voter")
 )
 
 // Raft 运行上下文
@@ -139,7 +140,7 @@ func (r *Raft) BootstrapCluster(configuration configuration) defaultFuture {
 }
 
 func (r *Raft) Leader() ServerAddr {
-	info := r.leaderInfo.Get()
+	info := r.getLeaderInfo()
 	return info.Addr
 }
 func (r *Raft) Apply(data []byte, timeout time.Duration) ApplyFuture {

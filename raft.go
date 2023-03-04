@@ -237,20 +237,6 @@ func (r *Raft) setState(newState State) {
 	atomic.StoreUint64((*uint64)(&r.state), (uint64)(newState))
 }
 
-//func (r *Raft) tick() {
-//	switch r.getState() {
-//	case Follower:
-//		r.cycleFollower()
-//	case Candidate:
-//		r.cycleCandidate()
-//	case Leader:
-//		r.cycleLeader()
-//	case ShutDown:
-//	default:
-//		panic("UNKNOWN STATE")
-//	}
-//}
-
 func (r *Raft) setCommittedConfiguration(c configuration, index uint64) {
 	r.configurations.commit = c
 	r.configurations.commitIndex = index
@@ -273,12 +259,8 @@ func EnecodeConfiguration(c configuration) (data []byte) {
 	return
 }
 func (r *Raft) processConfigurationLogEntry(entry *LogEntry) error {
-	switch entry.Type {
-	case LogConfiguration:
-		r.setCommittedConfiguration(r.configurations.latest, r.configurations.latestIndex)
-		//
-		r.setLatestConfiguration(DecodeConfiguration(entry.Data), entry.Index)
-	}
+	r.setCommittedConfiguration(r.configurations.latest, r.configurations.latestIndex)
+	r.setLatestConfiguration(DecodeConfiguration(entry.Data), entry.Index)
 	return nil
 }
 
@@ -530,9 +512,75 @@ func (r *Raft) processCMD(cmd *CMD) {
 		}
 	}
 }
+func HasExistStage(logs LogStore, stable KVStorage,
+	snaps SnapShotStore) (error, bool) {
+	for _, f := range []func() (uint64, error){
+		func() (uint64, error) {
+			return stable.GetUint64(keyCurrentTerm)
+		},
+		func() (uint64, error) {
+			return logs.LastIndex()
+		},
+		func() (uint64, error) {
+			snapshotList, err := snaps.List()
+			return uint64(len(snapshotList)), err
+		},
+	} {
+		if t, err := f(); err != nil {
+			return err, false
+		} else if t > 0 {
+			return nil, true
+		}
+	}
+
+	return nil, false
+}
+func BootstrapCluster(conf *Conf, logs LogStore, stable KVStorage,
+	snaps SnapShotStore, rpc RpcInterface, configuration configuration) error {
+	if e := validateConf(conf); e != nil {
+		return e
+	}
+	if err := checkConfiguration(configuration); err != nil {
+		return err
+	}
+	err, has := HasExistStage(logs, stable, snaps)
+	if err != nil {
+		return err
+	}
+	if has {
+		return ErrCantBootstrap
+	}
+
+	if err = stable.SetUint64(keyCurrentTerm, 1); err != nil {
+		return err
+	}
+	entry := &LogEntry{
+		Term:  1,
+		Data:  EnecodeConfiguration(configuration),
+		Index: 1,
+		Type:  LogConfiguration,
+	}
+	if err := logs.SetLogs([]*LogEntry{entry}); err != nil {
+		return err
+	}
+	return nil
+}
 
 func (r *Raft) bootstrap(c configuration) error {
-	return nil
+	if !canVote(c, r.localAddr.ID) {
+		return ErrNotVoter
+	}
+	err := BootstrapCluster(r.Config(), r.logStore, r.kvStorage, r.snapShotStore, r.rpc, c)
+	if err != nil {
+		return err
+	}
+	log, err := r.logStore.GetLog(1)
+	if err != nil {
+		return err
+	}
+	r.setCurrentTerm(log.Term)
+	r.setLastLog(log.Term, log.Index)
+	return r.processConfigurationLogEntry(log)
 }
 func (r *Raft) while(state State, do func() (end bool)) {
 	for state == r.state.GetState() && do() {
@@ -613,7 +661,6 @@ func (r *Raft) cycleFollower() {
 
 		case b := <-r.bootstrapCh:
 			b.fail(r.bootstrap(b.configuration))
-
 		case <-heartBeatCheckCh:
 			heartBeatCheckCh = randomTimeout(r.Config().HeartBeatTimeout)
 			// 如果未超时，则继续循环
@@ -687,7 +734,7 @@ func (r *Raft) sendLatestSnapshot(fr *followerReplication) (err error) {
 		Size:               meta.Size,
 		ConfigurationIndex: meta.configurationIndex,
 		Configuration:      EnecodeConfiguration(meta.configuration),
-		Leader:             r.rpc.EncodeAddr(Ptr(r.leaderInfo.Get())),
+		Leader:             r.rpc.EncodeAddr(Ptr(r.getLeaderInfo())),
 	}
 	req.LastLogIndex, req.LastLogTerm = r.getLastLog()
 	resp, err := r.rpc.InstallSnapShot(&peer, req, snapshot)
@@ -939,7 +986,9 @@ func (r *Raft) setCandidate() {
 func (r *Raft) setLeader() {
 	r.clear()
 	r.state.setState(Leader)
-	r.leaderInfo.Set(r.localAddr)
+	r.updateLeaderInfo(func(s *ServerInfo) {
+		*s = r.localAddr
+	})
 	r.tick = r.cycleLeader
 }
 
