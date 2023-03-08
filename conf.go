@@ -33,6 +33,7 @@ type Conf struct {
 	TransportTimeout   time.Duration
 	NetLayer           NetLayer
 	ServerAddrProvider ServerAddrProvider
+	Logger             Logger
 }
 
 type Member struct {

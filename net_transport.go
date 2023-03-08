@@ -1,6 +1,7 @@
 package go_raft
 
 import (
+	"encoding/json"
 	. "github.com/fuyao-w/common-util"
 
 	"bufio"
@@ -23,6 +24,7 @@ type (
 	}
 	typConnPool  map[ServerAddr][]*netConn
 	NetTransport struct {
+		logger             Logger
 		shutDown           shutDown
 		timeout            time.Duration
 		cmdChan            chan *CMD
@@ -104,6 +106,8 @@ func (n *NetTransport) genericRPC(info *ServerInfo, cmdType cmdType, request, re
 	defer func() {
 		if err != nil {
 			conn.Close()
+			data, _ := json.Marshal(request)
+			n.logger.Infof("genericRPC err : %s , cmdType :%d , req :%s", err, cmdType, data)
 		} else {
 			n.connPoll.PutConn(conn)
 		}
@@ -241,6 +245,7 @@ func NewNetTransport(conf *Conf) *NetTransport {
 	cmdCh := make(chan *CMD)
 	logConnCtx, cancel := context.WithCancel(context.Background())
 	t := &NetTransport{
+		logger:             conf.Logger,
 		timeout:            conf.TransportTimeout,
 		cmdChan:            cmdCh,
 		netLayer:           conf.NetLayer,

@@ -151,3 +151,14 @@ func (a AtomicVal[T]) Load() T {
 func (a AtomicVal[T]) Store(t T) {
 	a.v.Store(t)
 }
+
+type Logger interface {
+	Infof(format string, v ...any)
+	Info(v ...any)
+	Errorf(format string, v ...any)
+	Error(v ...any)
+	Warnf(format string, v ...any)
+	Warn(v ...any)
+	Debugf(format string, v ...any)
+	Debug(v ...any)
+}

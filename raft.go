@@ -582,7 +582,7 @@ func (r *Raft) bootstrap(c configuration) error {
 	r.setLastLog(log.Term, log.Index)
 	return r.processConfigurationLogEntry(log)
 }
-func (r *Raft) while(state State, do func() (end bool)) {
+func (r *Raft) while(state State, do func() (shouldContinue bool)) {
 	for state == r.state.GetState() && do() {
 	}
 }
@@ -634,10 +634,10 @@ func (r *Raft) cycleFollower() {
 		}
 	)
 
-	runFollower := func() (end bool) {
+	runFollower := func() (shouldContinue bool) {
 		select {
 		case <-r.shutDown.C:
-			return true
+			return
 		case <-r.leaderNotifyCh:
 			// ignore
 		case cmd := <-r.cmdChan:
@@ -654,29 +654,27 @@ func (r *Raft) cycleFollower() {
 			l.fail(ErrNotLeader)
 		case c := <-r.configurationsGetCh:
 			c.responded(r.configurations.Clone(), nil)
-
 		case <-r.followerNotifyCh:
 			// 变更心跳超时时间
 			heartBeatCheckCh = time.After(0)
-
 		case b := <-r.bootstrapCh:
 			b.fail(r.bootstrap(b.configuration))
 		case <-heartBeatCheckCh:
 			heartBeatCheckCh = randomTimeout(r.Config().HeartBeatTimeout)
 			// 如果未超时，则继续循环
-			if time.Now().Sub(r.lastContact.Get()) < r.Config().HeartBeatTimeout {
+			if time.Now().Sub(r.LastContact()) < r.Config().HeartBeatTimeout {
 				return true
 			}
 			config := r.configurations
 			oldLeaderInfo := r.getLeaderInfo()
 			// 如果超时，及时不参加选举，也需要清理下上下文相关的字段
-			r.clear()
+			r.clearLeaderInfo()
 			switch {
 			case config.latestIndex == 0:
-				warn("unknown peers ,aborting election")
+				warn("unknown peers, aborting election")
 				// 刚加入集群，不知道配置，放弃选举
 			case config.latestIndex == config.commitIndex && !canVote(config.latest, r.localAddr.ID):
-				warn("no part of stable configuration ,aborting election")
+				warn("no part of stable configuration, aborting election")
 				// 没有选举权，放弃选举
 			case canVote(config.latest, r.localAddr.ID):
 				warn("heartbeat timeout reached, starting election", "last-leader-addr", oldLeaderInfo.Addr, "last-leader-id", oldLeaderInfo.ID)
@@ -685,8 +683,9 @@ func (r *Raft) cycleFollower() {
 			default:
 				warn("heartbeat timeout reached, not part of a stable configuration or a non-voter, not triggering a leader election")
 			}
+			// 继续循环
 		}
-		return
+		return true
 	}
 	r.while(Follower, runFollower)
 }
@@ -887,7 +886,7 @@ func (r *Raft) heartbeat(fr *followerReplication, stopHeartBeatCh chan struct{})
 }
 
 func (r *Raft) persistVote(term uint64, addr ServerAddr) (err error) {
-	if err = r.kvStorage.SetUint64(keyLastVoteTerm, r.getCurrentTerm()); err != nil {
+	if err = r.kvStorage.SetUint64(keyLastVoteTerm, term); err != nil {
 		return
 	}
 
@@ -896,7 +895,9 @@ func (r *Raft) persistVote(term uint64, addr ServerAddr) (err error) {
 	}
 	return
 }
-func (r *Raft) election() chan *voteResult {
+
+// launchElection 给自己投一票，然后向其他节点发起选举请求
+func (r *Raft) launchElection() chan *voteResult {
 	var (
 		lastTerm, lastIndex = r.getLastLogEntry()
 		req                 = &VoteRequest{
@@ -911,24 +912,10 @@ func (r *Raft) election() chan *voteResult {
 	// 首先增加任期号
 	r.setCurrentTerm(r.getCurrentTerm() + 1)
 
-	ask := func(peer ServerInfo) {
-		r.goFunc(func() {
-			resp, err := r.rpc.VoteRequest(&peer, req)
-			if err != nil {
-				return
-			}
-			respChan <- &voteResult{
-				ServerID:     peer.ID,
-				VoteResponse: resp,
-			}
-		})
-	}
-	for _, server := range r.configurations.latest.servers {
-		if server.Suffrage != Voter {
-			continue
-		}
-		// 选自己
-		if server.ID == r.localAddr.ID {
+	for _, server := range r.getServers(true) {
+		switch {
+		case server.Suffrage != Voter:
+		case server.ID == r.localAddr.ID: // 选自己
 			if err := r.persistVote(req.Term, r.localAddr.Addr); err != nil {
 				return nil
 			}
@@ -939,8 +926,18 @@ func (r *Raft) election() chan *voteResult {
 				},
 				ServerID: r.localAddr.ID,
 			}
-		} else {
-			ask(server)
+		default:
+			r.goFunc(func() {
+				resp, err := r.rpc.VoteRequest(&server, req)
+				if err != nil {
+					r.logger.Errorf("launchElection err :%s , peer :%+v", err, server)
+					return
+				}
+				respChan <- &voteResult{
+					ServerID:     server.ID,
+					VoteResponse: resp,
+				}
+			})
 		}
 	}
 	return respChan
@@ -954,13 +951,14 @@ func (r *Raft) getServers(latest bool) []ServerInfo {
 }
 
 // quorumSize 获取投票获胜的法定人数
-func (r *Raft) quorumSize() (voters int) {
+func (r *Raft) quorumSize() int {
+	var voters int
 	for _, server := range r.getServers(true) {
 		if server.Suffrage == Voter {
 			voters++
 		}
 	}
-	return r.memberCount()<<1 + 1
+	return voters<<1 + 1
 }
 
 // memberCount 获取当前集群成员信息，包括自己
@@ -969,22 +967,18 @@ func (r *Raft) memberCount() int {
 }
 
 func (r *Raft) setFollower() {
-	r.clear()
 	r.state.setState(Follower)
 	r.tick = r.cycleFollower
 }
 func (r *Raft) setShutDown() {
-	r.clear()
 	r.state.setState(ShutDown)
 	r.tick = func() {}
 }
 func (r *Raft) setCandidate() {
-	r.clear()
 	r.state.setState(Candidate)
 	r.tick = r.cycleCandidate
 }
 func (r *Raft) setLeader() {
-	r.clear()
 	r.state.setState(Leader)
 	r.updateLeaderInfo(func(s *ServerInfo) {
 		*s = r.localAddr
@@ -994,17 +988,17 @@ func (r *Raft) setLeader() {
 
 func (r *Raft) cycleCandidate() {
 	var (
-		electionResultCh  = r.election() // 开始选举
+		electionResultCh  = r.launchElection() // 开始选举
 		grantedVotes      int
 		quorumSize        = r.quorumSize()
 		electionTimeout   = r.Config().ElectionTimeout
 		electionTimeoutCh = randomTimeout(r.Config().ElectionTimeout)
 	)
 
-	runCandidate := func() (end bool) {
+	runCandidate := func() (shouldContinue bool) {
 		select {
 		case <-r.shutDown.C:
-			return true
+			return
 		case <-r.leaderNotifyCh:
 			// ignore
 		case cmd := <-r.cmdChan:
@@ -1019,22 +1013,24 @@ func (r *Raft) cycleCandidate() {
 			u.fail(ErrNotLeader)
 		case l := <-r.leadershipTransferCh:
 			l.fail(ErrNotLeader)
-			l.fail(ErrNotLeader)
 		case c := <-r.configurationsGetCh:
 			c.responded(r.configurations.Clone(), nil)
 		case b := <-r.bootstrapCh:
 			b.fail(ErrCantBootstrap)
 		case result := <-electionResultCh: // 接收选举结果
 			if result.Term > r.getCurrentTerm() {
+				r.logger.Debug("newer term discovered, fallback to follower", "term", result.Term)
 				r.setCurrentTerm(result.Term)
 				r.setFollower()
 				return
 			}
 			if result.VoteGranted {
+				r.logger.Debug("vote granted", "from", result.ID, "term", result.Term, "tally", grantedVotes)
 				grantedVotes++
 			}
 			// 选举成功
 			if grantedVotes >= quorumSize {
+				r.logger.Info("election won", "term", result.Term, "tally", grantedVotes)
 				r.setLeader()
 			}
 		case <-r.followerNotifyCh:
@@ -1045,9 +1041,9 @@ func (r *Raft) cycleCandidate() {
 			}
 		case <-electionTimeoutCh:
 			// 选举超时失败，重试
-			return true
+			r.logger.Warnf("Election timeout reached, restarting election")
 		}
-		return
+		return true
 
 	}
 	r.while(Candidate, runCandidate)
@@ -1347,11 +1343,11 @@ func (r *Raft) cycleLeader() {
 	var (
 		leaderShipCh = time.After(lst)
 	)
-	runLeader := func() (end bool) {
+	runLeader := func() (shouldContinue bool) {
 		select {
 		case <-r.shutDown.C:
 			// shutdown
-			return true
+			return
 		case <-r.leaderNotifyCh:
 			for _, replication := range r.leaderState.replState {
 				asyncNotify(replication.notifyCh)
@@ -1391,7 +1387,7 @@ func (r *Raft) cycleLeader() {
 		case logFuture := <-r.applyCh: // 日志提交
 			if r.leadershipTransferInProgress() {
 				logFuture.fail(ErrLeadershipTransferInProgress)
-				return
+				goto GoContinue
 			}
 			entries := accumulate(logFuture)
 
@@ -1399,12 +1395,12 @@ func (r *Raft) cycleLeader() {
 				for _, entry := range entries {
 					entry.responded(nil, FutureErrNotLeader)
 				}
-				return
+				goto GoContinue
 			}
 			r.dispatchLogs(entries)
 		case <-r.leaderState.stepDown:
 			r.setFollower()
-			return true
+			return false
 		case <-r.leaderState.commitCh:
 			oldCommitIndex := r.commitIndex
 			commitIndex := r.leaderState.commitment.GetCommitIndex()
@@ -1428,7 +1424,7 @@ func (r *Raft) cycleLeader() {
 			}
 			r.processLogs(commitIndex, groupFutures)
 			if !stepDown {
-				return
+				goto GoContinue
 			}
 			if r.Config().ShutdownOnRemove {
 				r.ShutDown()
@@ -1440,28 +1436,30 @@ func (r *Raft) cycleLeader() {
 				leaderShipCh = time.After(Max(lst-maxDiff, minLeaderShipTimeout))
 			} else {
 				r.setFollower()
-
+				return false
 			}
 		case c := <-r.configurationsGetCh:
 			if r.leadershipTransferInProgress() {
 				c.fail(ErrLeadershipTransferInProgress)
-				return
+				goto GoContinue
 			}
 			c.responded(r.configurations.Clone(), nil)
 		case c := <-r.configurationChangeChIfStable():
 			if r.leadershipTransferInProgress() {
 				c.fail(ErrLeadershipTransferInProgress)
-				return
+				goto GoContinue
 			}
 			r.appendConfigurationEntry(c)
 		case u := <-r.userRestoreCh:
 			if r.leadershipTransferInProgress() {
 				u.fail(ErrLeadershipTransferInProgress)
-				return
+				goto GoContinue
 			}
 			u.responded(nil, r.restoreUserSnapshot(u.meta, u.reader))
 		}
-		return false
+
+	GoContinue:
+		return true
 	}
 	r.while(Leader, runLeader)
 }

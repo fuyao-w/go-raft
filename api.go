@@ -88,6 +88,8 @@ type Raft struct {
 
 	// leader 信息
 	leaderInfo *LockItem[ServerInfo]
+
+	logger Logger
 }
 
 func (r *Raft) restoreSnapShot() {

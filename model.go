@@ -69,14 +69,10 @@ type (
 	}
 )
 
-func (r *Raft) clear() {
-
+func (r *Raft) clearLeaderInfo() {
 	r.updateLeaderInfo(func(s *ServerInfo) {
 		*s = ServerInfo{}
 	})
-	//n.votedFor = ""
-	//n.NextIndex = 0 TODO
-	//n.MatchIndex = 0 TODO
 }
 func (n *raftContext) UpdateTerm() {
 	n.currentTerm++

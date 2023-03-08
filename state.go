@@ -29,8 +29,8 @@ func (s *State) GetState() State {
 
 	return State(atomic.LoadUint64((*uint64)(s)))
 }
-func (s State) String() string {
-	switch s {
+func (s *State) String() string {
+	switch *s {
 	case Follower:
 		return "Follower"
 	case Candidate:
@@ -61,8 +61,10 @@ type raftContext struct {
 }
 
 type lastEntry struct {
-	lastSnapShotIndex, lastSnapShotTerm uint64
-	lastLogIndex, lastLogTerm           uint64
+	lastSnapShotIndex uint64
+	lastSnapShotTerm  uint64
+	lastLogIndex      uint64
+	lastLogTerm       uint64
 }
 
 func (r *raftContext) getLastLog() (term uint64, index uint64) {
