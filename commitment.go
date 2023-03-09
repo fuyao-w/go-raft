@@ -18,7 +18,7 @@ func newCommitment(commitCh chan struct{}, configuration configuration, startInd
 		commitCh: commitCh,
 		matchIndex: func() (matchIndex map[ServerID]uint64) {
 			matchIndex = map[ServerID]uint64{}
-			for _, server := range configuration.servers {
+			for _, server := range configuration.Servers {
 				if server.Suffrage == Voter {
 					matchIndex[server.ID] = 0
 				}
@@ -35,7 +35,7 @@ func (c *commitment) setConfiguration(config configuration) {
 	defer c.lock.Unlock()
 	oldMatchIndex := c.matchIndex
 	c.matchIndex = map[ServerID]uint64{}
-	for _, server := range config.servers {
+	for _, server := range config.Servers {
 		if server.Suffrage == Voter {
 			c.matchIndex[server.ID] = oldMatchIndex[server.ID]
 		}

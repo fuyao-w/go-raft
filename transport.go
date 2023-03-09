@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// rpc 接口类型
+type cmdType uint8
+
 const (
 	CmdVoteRequest cmdType = iota + 1
 	CmdAppendEntry

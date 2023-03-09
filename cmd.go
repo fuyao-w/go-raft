@@ -29,7 +29,7 @@ func (d *ServerProcessor) SetFastPath(cb fastPath) {
 
 // Do ServerProcessor 不关心上层协议，所以不用处理第一个参数（cmdType）
 func (d *ServerProcessor) Do(_ cmdType, req interface{}) (resp interface{}, err error) {
-	resCh := make(chan interface{}, 1)
+	resCh := make(chan any, 1)
 	cmd := &CMD{
 		Request:  req,
 		Response: resCh,

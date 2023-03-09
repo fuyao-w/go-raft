@@ -25,6 +25,7 @@ var (
 
 // Raft 运行上下文
 type Raft struct {
+	// 集群最新副本
 	latestConfiguration *AtomicVal[configuration]
 	// logStore 提供日志操作的能力
 	logStore LogStore
@@ -92,6 +93,9 @@ type Raft struct {
 	logger Logger
 }
 
+func (r *Raft) shutDownCH() <-chan struct{} {
+	return r.shutDown.C
+}
 func (r *Raft) restoreSnapShot() {
 	list, err := r.snapShotStore.List()
 	if err != nil {
@@ -134,7 +138,7 @@ func (r *Raft) BootstrapCluster(configuration configuration) defaultFuture {
 	}
 	future.init()
 	select {
-	case <-r.shutDown.C:
+	case <-r.shutDownCH():
 		future.fail(ErrShutDown)
 	case r.bootstrapCh <- future:
 	}
@@ -160,7 +164,7 @@ func (r *Raft) applyLog(entry *LogEntry, timeout time.Duration) ApplyFuture {
 	select {
 	case <-tm:
 		return &errFuture[nilRespFuture]{errors.New("apply log time out")}
-	case <-r.shutDown.C:
+	case <-r.shutDownCH():
 		return &errFuture[nilRespFuture]{ErrShutDown}
 	case r.applyCh <- applyFuture:
 		return applyFuture
@@ -172,7 +176,7 @@ func (r *Raft) VerifyLeader() defaultFuture {
 	vf.init()
 	select {
 
-	case <-r.shutDown.C:
+	case <-r.shutDownCH():
 		return &errFuture[nilRespFuture]{ErrShutDown}
 	case r.verifyCh <- vf:
 		return vf
@@ -210,7 +214,7 @@ func (r *Raft) requestConfigChange(req configurationChangeRequest, timeout time.
 	select {
 	case <-tm:
 		return &errFuture[nilRespFuture]{err: errors.New("apply log time out")}
-	case <-r.shutDown.C:
+	case <-r.shutDownCH():
 		return &errFuture[nilRespFuture]{err: ErrShutDown}
 	case r.configurationChangeCh <- ccf:
 		return ccf
@@ -279,7 +283,7 @@ func (r *Raft) SnapShot() Future[SnapShotFutureResp] {
 	sf.init()
 	select {
 
-	case <-r.shutDown.C:
+	case <-r.shutDownCH():
 		return &errFuture[SnapShotFutureResp]{ErrShutDown}
 	case r.fsmSnapshotCh <- sf:
 		return sf
@@ -321,7 +325,7 @@ func (r *Raft) initiateLeadershipTransfer(id *ServerID, address *ServerAddr) def
 	select {
 	case r.leadershipTransferCh <- future:
 		return future
-	case <-r.shutDown.C:
+	case <-r.shutDownCH():
 		return &errFuture[nilRespFuture]{ErrShutDown}
 	default:
 		return &errFuture[nilRespFuture]{ErrEnqueueTimeout}

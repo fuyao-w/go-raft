@@ -203,8 +203,8 @@ func (n *NetTransport) SetHeartbeatFastPath(cb fastPath) {
 	n.processor.SetFastPath(cb)
 }
 
-func (n *NetTransport) FastTimeOut(info *ServerInfo, req *FastTimeOutReq) (*FastTimeOutResp, error) {
-	var resp = new(FastTimeOutResp)
+func (n *NetTransport) FastTimeOut(info *ServerInfo, req *FastTimeOutRequest) (*FastTimeOutResponse, error) {
+	var resp = new(FastTimeOutResponse)
 	return resp, n.genericRPC(info, CmdFastTimeout, req, resp)
 }
 func newConnPool(maxSinglePoolNum int) *connPool {
@@ -285,7 +285,7 @@ func (n *NetTransport) CloseConnections() {
 	})
 }
 func (s *NetTransport) Stop() {
-	s.shutDown.done(func() {
+	s.shutDown.done(func(_ bool) {
 		s.netLayer.Close()
 	})
 }

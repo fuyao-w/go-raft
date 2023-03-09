@@ -226,12 +226,12 @@ func (m *memRPC) SetHeartbeatFastPath(cb fastPath) {
 	m.fastPath = cb
 }
 
-func (m *memRPC) FastTimeOut(info *ServerInfo, request *FastTimeOutReq) (*FastTimeOutResp, error) {
+func (m *memRPC) FastTimeOut(info *ServerInfo, request *FastTimeOutRequest) (*FastTimeOutResponse, error) {
 	resp, err := m.doRpc(CmdFastTimeout, m.getPeer(info.Addr), request, nil)
 	if err != nil {
 		return nil, err
 	}
-	return resp.(*FastTimeOutResp), nil
+	return resp.(*FastTimeOutResponse), nil
 }
 
 func (m *memRPC) LocalAddr() ServerAddr {

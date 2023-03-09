@@ -15,7 +15,7 @@ type Conf struct {
 	SnapshotInterval  time.Duration
 	ElectionTimeout   time.Duration
 	CommitTimeout     time.Duration
-	LeaderShipTimeout time.Duration // 担任领导角色后的超时时间，如果在此时间内没有达到法定人数的支持，则应该回退到  follower
+	LeadershipTimeout time.Duration // 担任领导角色后的超时时间，如果在此时间内没有达到法定人数的支持，则应该回退到  follower
 	// MaxAppendEntries 单次提交支持的最长批量日志长度
 	MaxAppendEntries  int
 	SnapshotThreshold uint64
@@ -74,11 +74,11 @@ func validateConf(config *Conf) error {
 	if config.SnapshotInterval < 5*time.Millisecond {
 		return fmt.Errorf("SnapshotInterval is too low")
 	}
-	if config.LeaderShipTimeout < 5*time.Millisecond {
+	if config.LeadershipTimeout < 5*time.Millisecond {
 		return fmt.Errorf("LeaderLeaseTimeout is too low")
 	}
-	if config.LeaderShipTimeout > config.HeartBeatTimeout {
-		return fmt.Errorf("LeaderLeaseTimeout (%s) cannot be larger than heartbeat timeout (%s)", config.LeaderShipTimeout, config.HeartBeatTimeout)
+	if config.LeadershipTimeout > config.HeartBeatTimeout {
+		return fmt.Errorf("LeaderLeaseTimeout (%s) cannot be larger than heartbeat timeout (%s)", config.LeadershipTimeout, config.HeartBeatTimeout)
 	}
 	if config.ElectionTimeout < config.HeartBeatTimeout {
 		return fmt.Errorf("ElectionTimeout (%s) must be equal or greater than Heartbeat Timeout (%s)", config.ElectionTimeout, config.HeartBeatTimeout)

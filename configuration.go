@@ -1,14 +1,10 @@
 package go_raft
 
+// ServerSuffrage 代表一个节点是否有选举权
 type ServerSuffrage int
 
-const (
-	Voter ServerSuffrage = iota
-	NonVoter
-)
-
 type configuration struct {
-	servers []ServerInfo
+	Servers []ServerInfo `json:"servers"`
 }
 type configurations struct {
 	commit      configuration
@@ -16,6 +12,11 @@ type configurations struct {
 	commitIndex uint64
 	latestIndex uint64
 }
+
+const (
+	Voter ServerSuffrage = iota
+	NonVoter
+)
 
 // ConfigurationStore provides an interface that can optionally be implemented by FSMs
 // to store configuration updates made in the replicated log. In general this is only
@@ -47,9 +48,10 @@ const (
 )
 
 func (c *configuration) Clone() (copy configuration) {
-	copy.servers = append(copy.servers, c.servers...)
+	copy.Servers = append(copy.Servers, c.Servers...)
 	return
 }
+
 func (c *configurations) Clone() configurations {
 	res := configurations{
 		commit:      c.commit.Clone(),

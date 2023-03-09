@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -62,11 +63,11 @@ func (r *Raft) restoreUserSnapshot(meta *SnapShotMeta, reader io.Reader) error {
 		ID: sink.ID(),
 	}
 	fu.init()
-	fu.ShutdownCh = r.shutDown.C
+	fu.ShutdownCh = r.shutDownCH()
 
 	select {
 	case r.fsmMutateCh <- fu:
-	case <-r.shutDown.C:
+	case <-r.shutDownCH():
 		return ErrShutDown
 	}
 
@@ -221,7 +222,7 @@ type commitTuple struct {
 func (r *Raft) run() {
 	for {
 		select {
-		case <-r.shutDown.C:
+		case <-r.shutDownCH():
 			return
 		default:
 			r.tick()
@@ -241,10 +242,15 @@ func (r *Raft) setCommittedConfiguration(c configuration, index uint64) {
 	r.configurations.commit = c
 	r.configurations.commitIndex = index
 }
-func (r *Raft) setLatestConfiguration(c configuration, i uint64) {
+func (r *Raft) setLatestConfiguration(c configuration, index uint64) {
 	r.configurations.latest = c
-	r.configurations.latestIndex = i
+	r.configurations.latestIndex = index
 	r.latestConfiguration.Store(c.Clone())
+}
+func (r *Raft) clearLeaderInfo() {
+	r.updateLeaderInfo(func(s *ServerInfo) {
+		*s = ServerInfo{}
+	})
 }
 
 func (r *Raft) updateLeaderInfo(act func(s *ServerInfo)) {
@@ -254,7 +260,7 @@ func DecodeConfiguration(data []byte) (c configuration) {
 	json.Unmarshal(data, &c)
 	return
 }
-func EnecodeConfiguration(c configuration) (data []byte) {
+func EncodeConfiguration(c configuration) (data []byte) {
 	data, _ = json.Marshal(c)
 	return
 }
@@ -279,8 +285,8 @@ func (r *Raft) processAppendEntries(req *AppendEntryRequest, cmd *CMD) {
 	var (
 		lastTerm, lastIndex = r.getLastLogEntry()
 		resp                = &AppendEntryResponse{
-			Term:    r.getCurrentTerm(),
-			LastLog: lastIndex,
+			Term:         r.getCurrentTerm(),
+			LastLogIndex: lastIndex,
 		}
 		err error
 	)
@@ -405,6 +411,141 @@ func (r *Raft) processAppendEntries(req *AppendEntryRequest, cmd *CMD) {
 	r.setLastContact()
 }
 
+// appendEntry 处理投票信息
+func (r *Raft) appendEntry(req *AppendEntryRequest, cmd *CMD) {
+	appendEntry := func() (succ bool) {
+		if req.Term < r.currentTerm {
+			return
+		}
+		log, err := r.logStore.GetLog(req.PrevLogIndex)
+		if err != nil {
+			return
+		}
+		if log == nil {
+			return
+		}
+		if log.Term != req.PrevLogTerm {
+			return
+		}
+		if len(r.getLeaderInfo().ID) == 0 {
+			r.updateLeaderInfo(func(s *ServerInfo) {
+				s.ID = req.LeaderID
+			})
+		}
+		if err = r.logStore.SetLogs(req.Entries); err != nil {
+			return
+		}
+		return true
+	}
+
+	cmd.Response <- &AppendEntryResponse{
+		Term:    r.currentTerm,
+		Success: appendEntry(),
+	}
+}
+
+// fastTimeout leader 心跳快速超时,转换为 follower
+func (r *Raft) fastTimeout(_ *FastTimeOutRequest, cmd *CMD) {
+	r.clearLeaderInfo()
+	r.setCandidate()
+	r.candidateFromLeadershipTransfer = true
+	cmd.Response <- &FastTimeOutResponse{}
+}
+
+// installSnapshot 安装快照
+func (r *Raft) installSnapshot(req *InstallSnapshotRequest, cmd *CMD) {
+	var (
+		resp = new(InstallSnapshotResponse)
+		err  error
+	)
+	defer func() {
+		resp.RPCHeader = r.buildRPCHeader(err)
+		io.Copy(ioutil.Discard, cmd.Reader)
+	}()
+
+	// 直接忽略即可
+	if req.Term < r.getCurrentTerm() {
+		r.logger.Infof("ingore install snapshot request with older term , request term :%d , current term :%d", req.Term, r.getCurrentTerm())
+		return
+	}
+	// 更新自己的任期到最新
+	if req.Term > r.getCurrentTerm() {
+		r.setFollower()
+		r.setCurrentTerm(req.Term)
+		resp.Term = req.Term
+	}
+	// 更新 leader 信息
+	r.updateLeaderInfo(func(s *ServerInfo) {
+		*s = ServerInfo{
+			ID: req.ID,
+			Addr: func() ServerAddr {
+				if len(req.ID) > 0 { // 说明是其他节点过来的，而不是人通过 api 引导的
+					return r.rpc.DecodeAddr([]byte(req.RPCHeader.Addr))
+				}
+				// 人为引导的，使用请求里传过来的 leader 即可
+				return r.rpc.DecodeAddr(req.Leader)
+			}(),
+		}
+	})
+
+	reqConfiguration := DecodeConfiguration(req.Configuration)
+
+	sink, err := r.snapShotStore.Create(req.SnapShotVersion, req.LastLogIndex, req.LastLogTerm, reqConfiguration, req.ConfigurationIndex, r.rpc)
+	if err != nil {
+		r.logger.Errorf("failed to create snapshot sink ,err :%s", err)
+		return
+	}
+
+	// 监控统计用
+	counterReader := newCounterReader(cmd.Reader)
+	written, err := io.Copy(sink, counterReader)
+	if err != nil {
+		sink.Cancel()
+		return
+	}
+
+	if written != req.Size {
+		sink.Cancel()
+		err = errors.New("read not enough")
+		return
+	}
+	if err = sink.Close(); err != nil {
+		r.logger.Errorf("failed to close snapshot ,err :%s", err)
+		return
+	}
+	r.logger.Infof("copied to local snapshot,bytes :%d", written)
+
+	fu := &restoreFuture{
+		ID: sink.ID(),
+	}
+	fu.init()
+	fu.ShutdownCh = r.shutDownCH()
+	select {
+	case r.fsmMutateCh <- fu: // 交给状态机同步到最新的状态
+	case <-r.shutDownCH():
+		fu.responded(nil, ErrShutDown)
+		return
+	}
+	// 等待状态机同步结果
+	if _, err = fu.Response(); err != nil {
+		r.logger.Errorf("failed to restore snapshot ,err :%s", err)
+		return
+	}
+
+	r.setLastApplied(req.LastLogIndex)
+	r.setLastSnapShot(req.LastLogIndex, req.LastLogTerm)
+	r.setLatestConfiguration(reqConfiguration, req.ConfigurationIndex)
+	r.setCommittedConfiguration(reqConfiguration, req.ConfigurationIndex)
+
+	if _err := r.compactLogEntries(req.LastLogIndex); _err != nil {
+		r.logger.Errorf("failed to compact logs ,err :%s", _err)
+
+	}
+	r.logger.Infof("install remote snapshot")
+	resp.Success = true
+	r.setLastContact()
+}
+
 // processVote 处理投票信息
 func (r *Raft) processVote(req *VoteRequest, cmd *CMD) {
 	var (
@@ -481,35 +622,11 @@ func (r *Raft) processCMD(cmd *CMD) {
 	case *VoteRequest:
 		r.processVote(req, cmd)
 	case *AppendEntryRequest:
-		appendEntry := func() (succ bool) {
-			if req.Term < r.currentTerm {
-				return
-			}
-			log, err := r.logStore.GetLog(req.PrevLogIndex)
-			if err != nil {
-				return
-			}
-			if log == nil {
-				return
-			}
-			if log.Term != req.PrevLogTerm {
-				return
-			}
-			if len(r.getLeaderInfo().ID) == 0 {
-				r.updateLeaderInfo(func(s *ServerInfo) {
-					s.ID = req.LeaderID
-				})
-			}
-			if err = r.logStore.SetLogs(req.Entries); err != nil {
-				return
-			}
-			return true
-		}
-
-		cmd.Response <- &AppendEntryResponse{
-			Term:    r.currentTerm,
-			Success: appendEntry(),
-		}
+		r.appendEntry(req, cmd)
+	case *FastTimeOutRequest:
+		r.fastTimeout(req, cmd)
+	case *InstallSnapshotRequest:
+		r.installSnapshot(req, cmd)
 	}
 }
 func HasExistStage(logs LogStore, stable KVStorage,
@@ -556,7 +673,7 @@ func BootstrapCluster(conf *Conf, logs LogStore, stable KVStorage,
 	}
 	entry := &LogEntry{
 		Term:  1,
-		Data:  EnecodeConfiguration(configuration),
+		Data:  EncodeConfiguration(configuration),
 		Index: 1,
 		Type:  LogConfiguration,
 	}
@@ -588,16 +705,14 @@ func (r *Raft) while(state State, do func() (shouldContinue bool)) {
 }
 
 // checkLeadership 检查当前是否还有领导权
-func (r *Raft) checkLeadership() (bool, time.Duration) {
-
+func (r *Raft) checkLeadership() (keep bool, maxDiff time.Duration) {
 	var (
-		contacted int
-		now       = time.Now()
-		replState = r.leaderState.replState
-		maxDiff   time.Duration
-		tm        = r.Config().LeaderShipTimeout
+		contacted         int
+		now               = time.Now()
+		replState         = r.leaderState.replState
+		leadershipTimeout = r.Config().LeadershipTimeout
 	)
-	for _, server := range r.configurations.latest.servers {
+	for _, server := range r.getLatestServers() {
 		if server.ID == r.localAddr.ID {
 			contacted++
 			continue
@@ -607,7 +722,7 @@ func (r *Raft) checkLeadership() (bool, time.Duration) {
 			continue
 		}
 		sub := now.Sub(repl.lastContact.Get())
-		if sub > tm {
+		if sub > leadershipTimeout {
 			continue
 		}
 		contacted++
@@ -616,7 +731,7 @@ func (r *Raft) checkLeadership() (bool, time.Duration) {
 	return contacted >= r.quorumSize(), maxDiff
 }
 func canVote(c configuration, id ServerID) bool {
-	for _, server := range c.servers {
+	for _, server := range c.Servers {
 		if server.ID == id {
 			return server.Suffrage == Voter
 		}
@@ -636,7 +751,7 @@ func (r *Raft) cycleFollower() {
 
 	runFollower := func() (shouldContinue bool) {
 		select {
-		case <-r.shutDown.C:
+		case <-r.shutDownCH():
 			return
 		case <-r.leaderNotifyCh:
 			// ignore
@@ -732,7 +847,7 @@ func (r *Raft) sendLatestSnapshot(fr *followerReplication) (err error) {
 		Term:               r.currentTerm,
 		Size:               meta.Size,
 		ConfigurationIndex: meta.configurationIndex,
-		Configuration:      EnecodeConfiguration(meta.configuration),
+		Configuration:      EncodeConfiguration(meta.configuration),
 		Leader:             r.rpc.EncodeAddr(Ptr(r.getLeaderInfo())),
 	}
 	req.LastLogIndex, req.LastLogTerm = r.getLastLog()
@@ -912,7 +1027,7 @@ func (r *Raft) launchElection() chan *voteResult {
 	// 首先增加任期号
 	r.setCurrentTerm(r.getCurrentTerm() + 1)
 
-	for _, server := range r.getServers(true) {
+	for _, server := range r.getLatestServers() {
 		switch {
 		case server.Suffrage != Voter:
 		case server.ID == r.localAddr.ID: // 选自己
@@ -943,17 +1058,14 @@ func (r *Raft) launchElection() chan *voteResult {
 	return respChan
 }
 
-func (r *Raft) getServers(latest bool) []ServerInfo {
-	if latest {
-		return r.configurations.latest.servers
-	}
-	return r.configurations.commit.servers
+func (r *Raft) getLatestServers() []ServerInfo {
+	return r.configurations.latest.Servers
 }
 
 // quorumSize 获取投票获胜的法定人数
 func (r *Raft) quorumSize() int {
 	var voters int
-	for _, server := range r.getServers(true) {
+	for _, server := range r.getLatestServers() {
 		if server.Suffrage == Voter {
 			voters++
 		}
@@ -963,7 +1075,7 @@ func (r *Raft) quorumSize() int {
 
 // memberCount 获取当前集群成员信息，包括自己
 func (r *Raft) memberCount() int {
-	return len(r.getServers(true))
+	return len(r.getLatestServers())
 }
 
 func (r *Raft) setFollower() {
@@ -997,7 +1109,7 @@ func (r *Raft) cycleCandidate() {
 
 	runCandidate := func() (shouldContinue bool) {
 		select {
-		case <-r.shutDown.C:
+		case <-r.shutDownCH():
 			return
 		case <-r.leaderNotifyCh:
 			// ignore
@@ -1050,11 +1162,11 @@ func (r *Raft) cycleCandidate() {
 
 }
 
-// startStopReplicate 对新节点开始心跳，如果节点变化过，则停止已移除 servers 的节点
+// startStopReplicate 对新节点开始心跳，如果节点变化过，则停止已移除 Servers 的节点
 func (r *Raft) startStopReplicate() {
-	var inConfig = make(map[ServerID]bool, len(r.configurations.latest.servers))
+	var inConfig = make(map[ServerID]bool, len(r.getLatestServers()))
 
-	for _, server := range r.configurations.latest.servers {
+	for _, server := range r.getLatestServers() {
 		if server.ID == r.localAddr.ID {
 			continue
 		}
@@ -1163,7 +1275,7 @@ func (r *Raft) appendConfigurationEntry(c *configurationChangeFuture) {
 	}
 
 	c.log = &LogEntry{
-		Data: EnecodeConfiguration(newConfiguration),
+		Data: EncodeConfiguration(newConfiguration),
 		Type: LogConfiguration,
 	}
 
@@ -1175,12 +1287,12 @@ func (r *Raft) appendConfigurationEntry(c *configurationChangeFuture) {
 
 func checkConfiguration(config configuration) error {
 	var (
-		idSet   = make(map[ServerID]bool, len(config.servers))
-		addrSet = make(map[ServerAddr]bool, len(config.servers))
+		idSet   = make(map[ServerID]bool, len(config.Servers))
+		addrSet = make(map[ServerAddr]bool, len(config.Servers))
 		err     = fmt.Errorf
 		voter   int
 	)
-	for _, server := range config.servers {
+	for _, server := range config.Servers {
 		if idSet[server.ID] {
 			return err("id conflict :%s", server.ID)
 		}
@@ -1209,47 +1321,47 @@ func clacNewConfiguration(current configuration, currentIndex uint64, req config
 	switch req.command {
 	case AddVoter:
 		var found bool
-		for i, server := range config.servers {
+		for i, server := range config.Servers {
 			if server.ID != req.peer.ID {
 				continue
 			}
 			found = true
-			config.servers[i] = req.peer
+			config.Servers[i] = req.peer
 			if server.Suffrage != Voter {
-				config.servers[i].Suffrage = Voter
+				config.Servers[i].Suffrage = Voter
 			}
 			break
 		}
 		if !found {
-			config.servers = append(config.servers, req.peer)
+			config.Servers = append(config.Servers, req.peer)
 		}
 	case AddNonVoter:
 		var found bool
-		for i, server := range config.servers {
+		for i, server := range config.Servers {
 			if server.ID != req.peer.ID {
 				continue
 			}
 			found = true
-			config.servers[i] = req.peer
+			config.Servers[i] = req.peer
 			if server.Suffrage != NonVoter {
-				config.servers[i].Suffrage = NonVoter
+				config.Servers[i].Suffrage = NonVoter
 			}
 			break
 		}
 		if !found {
-			config.servers = append(config.servers, req.peer)
+			config.Servers = append(config.Servers, req.peer)
 		}
 	case DemoteVoter:
-		for i, server := range config.servers {
+		for i, server := range config.Servers {
 			if server.ID == req.peer.ID {
-				config.servers[i].Suffrage = NonVoter
+				config.Servers[i].Suffrage = NonVoter
 				break
 			}
 		}
 	case removeServer:
-		for i, server := range config.servers {
+		for i, server := range config.Servers {
 			if server.ID == req.peer.ID {
-				config.servers = append(config.servers[:i], config.servers[i+1:]...)
+				config.Servers = append(config.Servers[:i], config.Servers[i+1:]...)
 				break
 			}
 		}
@@ -1279,7 +1391,7 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*LogFuture) {
 	applyBatch := func(tupleList []*commitTuple) {
 		select {
 		case r.fsmMutateCh <- tupleList:
-		case <-r.shutDown.C:
+		case <-r.shutDownCH():
 			for _, future := range tupleList {
 				future.future.fail(ErrShutDown)
 			}
@@ -1318,10 +1430,9 @@ func (r *Raft) cycleLeader() {
 	r.initLeaderState()
 	r.startStopReplicate()
 	var (
-		lst = r.Config().LeaderShipTimeout
-
-		stepDown   bool // 用于标识 leader 是否已经下台，因为 select 会出现竞争，所以我们需要额外的同步标记
-		accumulate = func(log *LogFuture) (entries []*LogFuture) {
+		leadershipTimeout = r.Config().LeadershipTimeout
+		stepDown          bool // 用于标识 leader 是否已经下台，因为 select 会出现竞争，所以我们需要额外的同步标记
+		accumulate        = func(log *LogFuture) (entries []*LogFuture) {
 			entries = []*LogFuture{log}
 			for i := 0; i < r.Config().MaxAppendEntries; i++ {
 				select {
@@ -1334,18 +1445,19 @@ func (r *Raft) cycleLeader() {
 			return
 		}
 	)
-	// 成为领导者后首先提交一条日志， TODO 原因是为啥来着，，，，
+	// 成为领导者后首先提交一条日志，成功后代表之前的日志均已提交
 	if err := r.dispatchLogs([]*LogFuture{{log: &LogEntry{Type: LogNoop}}}); err != nil {
 		// 提交失败则回退成 follower
 		r.setFollower()
+		return
 	}
 
 	var (
-		leaderShipCh = time.After(lst)
+		leaderShipCh = time.After(leadershipTimeout)
 	)
 	runLeader := func() (shouldContinue bool) {
 		select {
-		case <-r.shutDown.C:
+		case <-r.shutDownCH():
 			// shutdown
 			return
 		case <-r.leaderNotifyCh:
@@ -1387,7 +1499,7 @@ func (r *Raft) cycleLeader() {
 		case logFuture := <-r.applyCh: // 日志提交
 			if r.leadershipTransferInProgress() {
 				logFuture.fail(ErrLeadershipTransferInProgress)
-				goto GoContinue
+				return true
 			}
 			entries := accumulate(logFuture)
 
@@ -1395,7 +1507,7 @@ func (r *Raft) cycleLeader() {
 				for _, entry := range entries {
 					entry.responded(nil, FutureErrNotLeader)
 				}
-				goto GoContinue
+				return true
 			}
 			r.dispatchLogs(entries)
 		case <-r.leaderState.stepDown:
@@ -1424,7 +1536,7 @@ func (r *Raft) cycleLeader() {
 			}
 			r.processLogs(commitIndex, groupFutures)
 			if !stepDown {
-				goto GoContinue
+				return true
 			}
 			if r.Config().ShutdownOnRemove {
 				r.ShutDown()
@@ -1433,32 +1545,31 @@ func (r *Raft) cycleLeader() {
 			}
 		case <-leaderShipCh:
 			if keep, maxDiff := r.checkLeadership(); keep {
-				leaderShipCh = time.After(Max(lst-maxDiff, minLeaderShipTimeout))
+				leaderShipCh = time.After(Max(leadershipTimeout-maxDiff, minLeaderShipTimeout))
 			} else {
 				r.setFollower()
-				return false
+				return
 			}
 		case c := <-r.configurationsGetCh:
 			if r.leadershipTransferInProgress() {
 				c.fail(ErrLeadershipTransferInProgress)
-				goto GoContinue
+				return true
 			}
 			c.responded(r.configurations.Clone(), nil)
 		case c := <-r.configurationChangeChIfStable():
 			if r.leadershipTransferInProgress() {
 				c.fail(ErrLeadershipTransferInProgress)
-				goto GoContinue
+				return true
 			}
 			r.appendConfigurationEntry(c)
 		case u := <-r.userRestoreCh:
 			if r.leadershipTransferInProgress() {
 				u.fail(ErrLeadershipTransferInProgress)
-				goto GoContinue
+				return true
 			}
 			u.responded(nil, r.restoreUserSnapshot(u.meta, u.reader))
 		}
 
-	GoContinue:
 		return true
 	}
 	r.while(Leader, runLeader)

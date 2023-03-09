@@ -2,6 +2,7 @@ package go_raft
 
 import (
 	. "github.com/fuyao-w/common-util"
+	"io"
 	"sync/atomic"
 
 	crand "crypto/rand"
@@ -42,12 +43,14 @@ func newShutDown() shutDown {
 	}
 }
 
-func (s *shutDown) done(act func()) {
+func (s *shutDown) done(act func(oldState bool)) {
 	s.state.Action(func(t *bool) {
+		old := *t
 		*t = true
+
 		close(s.C)
 		if act != nil {
-			act()
+			act(old)
 		}
 		s.dataBus.Publish(0, nil)
 	})
@@ -161,4 +164,24 @@ type Logger interface {
 	Warn(v ...any)
 	Debugf(format string, v ...any)
 	Debug(v ...any)
+}
+
+func newCounterReader(r io.Reader) *countingReader {
+	return &countingReader{reader: r}
+}
+
+// countingReader 支持随时查询读取长度
+type countingReader struct {
+	reader io.Reader
+	count  int64
+}
+
+func (r *countingReader) Read(p []byte) (n int, err error) {
+	n, err = r.reader.Read(p)
+	atomic.AddInt64(&r.count, int64(n))
+	return
+}
+
+func (r *countingReader) Count() int64 {
+	return atomic.LoadInt64(&r.count)
 }

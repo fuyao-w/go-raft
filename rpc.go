@@ -5,12 +5,11 @@ import (
 )
 
 type (
-	cmdType uint8
-	CMD     struct {
+	CMD struct {
 		CmdType  cmdType
 		Request  any
-		Reader   io.Reader // in memory 安装快照的时候用
 		Response chan any
+		Reader   io.Reader // 安装快照的时候用
 	}
 	RpcInterface interface {
 		// Consumer 返回一个可消费的 Chan
@@ -26,7 +25,7 @@ type (
 		// SetHeartbeatFastPath 用于快速处理，不用经过主流程，不支持也没关系
 		SetHeartbeatFastPath(cb fastPath)
 		// FastTimeOut 快速超时转换为候选人
-		FastTimeOut(*ServerInfo, *FastTimeOutReq) (*FastTimeOutResp, error)
+		FastTimeOut(*ServerInfo, *FastTimeOutRequest) (*FastTimeOutResponse, error)
 
 		LocalAddr() ServerAddr
 		EncodeAddr(info *ServerInfo) []byte

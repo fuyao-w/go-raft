@@ -34,7 +34,7 @@ type deferResponse[T any] struct {
 	timeout    chan time.Time
 	errCh      chan error
 	response   T
-	ShutdownCh chan struct{}
+	ShutdownCh <-chan struct{}
 }
 
 func (d *deferResponse[_]) init() {

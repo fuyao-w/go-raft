@@ -46,11 +46,13 @@ func (r *Raft) runLogFSM() {
 	restore := func(req *restoreFuture) {
 		meta, readerCloser, err := r.snapShotStore.Open(req.ID)
 		if err != nil {
+			r.logger.Errorf("fsm restore fail to open snap shot, err :%s ", err)
 			req.fail(err)
 			return
 		}
 		defer func() { readerCloser.Close() }()
 		if err = r.fsm.ReStore(readerCloser); err != nil {
+			r.logger.Errorf("fsm restore fail to restore, err :%s ", err)
 			req.fail(err)
 			return
 		}
@@ -62,7 +64,7 @@ func (r *Raft) runLogFSM() {
 	}
 	for {
 		select {
-		case <-r.shutDown.C:
+		case <-r.shutDownCH():
 			return
 		case inter := <-r.fsmMutateCh:
 			switch req := inter.(type) {
@@ -74,14 +76,15 @@ func (r *Raft) runLogFSM() {
 				restore(req)
 			}
 		case req := <-r.fsmSnapshotCh:
-			snapShot, err := r.fsm.SnapShot()
+			snapshot, err := r.fsm.SnapShot()
 			if err != nil {
+				r.logger.Errorf("fsm  fail to get snap shot, err :%s ", err)
 				req.fail(err)
 			} else {
 				req.responded(SnapShotFutureResp{
 					term:        lastTerm,
 					index:       lastIndex,
-					fsmSnapShot: snapShot,
+					fsmSnapShot: snapshot,
 				}, nil)
 			}
 		}

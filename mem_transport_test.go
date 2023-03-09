@@ -35,9 +35,9 @@ func TestMemTransport(t *testing.T) {
 
 				case CmdAppendEntry:
 					cmd.Response <- &AppendEntryResponse{
-						Term:    uint64(i + 1),
-						LastLog: 111,
-						Success: true,
+						Term:         uint64(i + 1),
+						LastLogIndex: 111,
+						Success:      true,
 					}
 
 				}

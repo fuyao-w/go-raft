@@ -1,6 +1,7 @@
 package go_raft
 
 type (
+	// AppendEntryRequest 追加日志
 	AppendEntryRequest struct {
 		*RPCHeader
 		Term         uint64      `json:"term"`           // 领导人的任期
@@ -12,69 +13,64 @@ type (
 	}
 	AppendEntryResponse struct {
 		*RPCHeader
-		Term    uint64 `json:"term"` // 响应者的当前任期，对于领导人而言 它会更新自己的任期
-		LastLog uint64 `json:"last_log"`
-		Success bool   `json:"success"` // 如果跟随者所含有的条目和 prevLogIndex 以及 prevLogTerm 匹配上了，则为 true
+		Term         uint64 `json:"term"`           // 响应者的当前任期，对于领导人而言 它会更新自己的任期
+		LastLogIndex uint64 `json:"last_log_index"` // follower 最新的日志 index
+		Success      bool   `json:"success"`        // 如果跟随者所含有的条目和 prevLogIndex 以及 prevLogTerm 匹配上了，则为 true
 	}
-
+	// VoteRequest 投票
 	VoteRequest struct {
 		*RPCHeader
-		Term               uint64 `json:"term"`
-		LastLogIndex       uint64 `json:"last_log_index"`
-		LastLogTerm        uint64 `json:"last_log_term"`
-		LeadershipTransfer bool   `json:"leadership_transfer"`
+		Term               uint64 `json:"term"`                // 节点当前任期
+		LastLogIndex       uint64 `json:"last_log_index"`      // 节点最新日志的索引
+		LastLogTerm        uint64 `json:"last_log_term"`       // 节点最新日志的任期
+		LeadershipTransfer bool   `json:"leadership_transfer"` // 是否由主动引导 leader 切换导致的选举
 	}
 	VoteResponse struct {
 		*RPCHeader
 		Term        uint64 `json:"term"`         // 响应者的当前任期，以便于候选人去更新自己的任期号
 		VoteGranted bool   `json:"vote_granted"` // 候选人赢得了此张选票时为真
 	}
+	// InstallSnapshotRequest 安装快照
 	InstallSnapshotRequest struct {
 		*RPCHeader
-		SnapShotVersion
-		Term                      uint64
-		LastLogIndex, LastLogTerm uint64
-		Size                      int64
-		ConfigurationIndex        uint64
-		Configuration             []byte
-		Leader                    []byte
-	}
-	FastTimeOutReq struct {
-	}
-	FastTimeOutResp struct {
+		SnapShotVersion           // 快照版本，预留
+		Term               uint64 `json:"term"` // leader 任期
+		LastLogIndex       uint64 `json:"last_log_index"`
+		LastLogTerm        uint64 `json:"last_log_term"`       // leader 当前最新的日志索引和任期
+		Size               int64  `json:"size"`                // 快照大小
+		ConfigurationIndex uint64 `json:"configuration_index"` // 配置信息的日志 index
+		Configuration      []byte `json:"configuration"`       // 集群配置信息
+		Leader             []byte `json:"leader"`              // 如果有人工引导，可以通过该字段指定 leader 的地址
 	}
 	InstallSnapshotResponse struct {
-		Success bool
-		Term    uint64
+		*RPCHeader
+		Success bool   `json:"success"`
+		Term    uint64 `json:"term"`
 	}
+	// FastTimeOutRequest 引导 leader 直接超时
+	FastTimeOutRequest struct {
+	}
+	FastTimeOutResponse struct {
+	}
+	// ServerInfo 节点信息
 	ServerInfo struct {
-		// Suffrage determines whether the server gets a election.
-		Suffrage ServerSuffrage
+		Suffrage ServerSuffrage // 该节点是否选举权
 		ID       ServerID
 		Addr     ServerAddr
 	}
-
+	// voteResult 投票结果
 	voteResult struct {
 		*VoteResponse
 		ServerID ServerID
 	}
-
-	ServerID   string
+	// ServerID 节点的 ID
+	ServerID string
+	// ServerAddr 节点地址
 	ServerAddr string
 
 	RPCHeader struct {
-		ID     ServerID
-		Addr   ServerAddr
-		ErrMsg string
+		ID     ServerID   `json:"id"`
+		Addr   ServerAddr `json:"addr"`
+		ErrMsg string     `json:"err_msg"`
 	}
 )
-
-func (r *Raft) clearLeaderInfo() {
-	r.updateLeaderInfo(func(s *ServerInfo) {
-		*s = ServerInfo{}
-	})
-}
-func (n *raftContext) UpdateTerm() {
-	n.currentTerm++
-	//n.votedFor = ""
-}

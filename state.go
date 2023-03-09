@@ -26,7 +26,6 @@ func (s *State) setState(newState State) {
 }
 
 func (s *State) GetState() State {
-
 	return State(atomic.LoadUint64((*uint64)(s)))
 }
 func (s *State) String() string {
@@ -143,15 +142,12 @@ func (r *Raft) waitShutDown() {
 }
 
 func (r *Raft) ShutDown() (resp defaultFuture) {
-	r.shutDown.state.Action(func(t *bool) {
-		if *t {
-			resp = &shutDownFuture{}
-		} else {
-			close(r.shutDown.C)
-			*t = true
-			r.setShutDown()
-			resp = &shutDownFuture{r}
+	r.shutDown.done(func(oldState bool) {
+		resp := new(shutDownFuture)
+		if !oldState {
+			resp.raft = r
 		}
+		r.setShutDown()
 	})
 	return resp
 }

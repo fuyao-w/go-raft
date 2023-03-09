@@ -16,6 +16,7 @@ type (
 		ID() string
 		Cancel() error
 	}
+	// SnapShotVersion 表示快照的版本，会在以后的快照结构变更的时候使用
 	SnapShotVersion uint64
 	SnapShotMeta    struct {
 		Version            SnapShotVersion
@@ -67,7 +68,7 @@ func (r *Raft) buildSnapShot() (string, error) {
 	req.init()
 	select {
 	case r.fsmSnapshotCh <- req:
-	case <-r.shutDown.C:
+	case <-r.shutDownCH():
 		return "", ErrShutDown
 	}
 
@@ -82,7 +83,7 @@ func (r *Raft) buildSnapShot() (string, error) {
 	configurationFuture.init()
 	select {
 	case r.configurationsGetCh <- configurationFuture:
-	case <-r.shutDown.C:
+	case <-r.shutDownCH():
 		return "", ErrShutDown
 	}
 	cresp, err := configurationFuture.Response()
@@ -130,7 +131,7 @@ func (r *Raft) runSnapShot() {
 					return r.snapShotStore.Open(id)
 				}, nil)
 			}
-		case <-r.shutDown.C:
+		case <-r.shutDownCH():
 			return
 		}
 
