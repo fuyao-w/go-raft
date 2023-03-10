@@ -1,6 +1,7 @@
 package go_raft
 
 import (
+	"fmt"
 	. "github.com/fuyao-w/common-util"
 	"golang.org/x/sync/errgroup"
 	"sync/atomic"
@@ -116,6 +117,10 @@ func (r *raftContext) setCommitIndex(index uint64) {
 }
 
 func (r *Raft) setCurrentTerm(term uint64) {
+	err := r.kvStorage.SetUint64(keyCurrentTerm, term)
+	if err != nil {
+		panic(fmt.Errorf("failed to save current term :%d", err))
+	}
 	atomic.StoreUint64(&r.currentTerm, term)
 }
 

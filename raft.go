@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	. "github.com/fuyao-w/common-util"
 	"golang.org/x/sync/errgroup"
@@ -80,8 +81,17 @@ func (r *Raft) restoreUserSnapshot(meta *SnapShotMeta, reader io.Reader) error {
 	r.setLastSnapShot(term, lastIndex)
 	return nil
 }
+
 func (r *Raft) leadershipTransferInProgress() bool {
-	return atomic.LoadInt32(&r.leaderState.leadershipTransferInProgress) == 1
+	if r.leaderState.leadershipTransferInProgress == nil {
+		return false
+	}
+	pointer := atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(&r.leaderState.leadershipTransferInProgress)))
+	return *(*bool)(pointer)
+}
+func (r *Raft) setLeadershipTransferInProgress(inProgress bool) {
+	atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&r.leaderState.leadershipTransferInProgress)),
+		unsafe.Pointer(&inProgress))
 }
 func (r *Raft) setLastContact() {
 	r.lastContact.Set(time.Now())
@@ -115,7 +125,7 @@ type LeaderState struct {
 	commitCh                     chan struct{}
 	commitment                   *commitment
 	notify                       map[*verifyFuture]struct{}
-	leadershipTransferInProgress int32 // indicates that a leadership transfer is in progress.
+	leadershipTransferInProgress *bool // indicates that a leadership transfer is in progress.
 }
 
 func (r *Raft) Start() {
@@ -792,11 +802,11 @@ func (r *Raft) cycleFollower() {
 				warn("no part of stable configuration, aborting election")
 				// 没有选举权，放弃选举
 			case canVote(config.latest, r.localAddr.ID):
-				warn("heartbeat timeout reached, starting election", "last-leader-addr", oldLeaderInfo.Addr, "last-leader-id", oldLeaderInfo.ID)
+				warn("heartbeat abortCh reached, starting election", "last-leader-addr", oldLeaderInfo.Addr, "last-leader-id", oldLeaderInfo.ID)
 				// 发起选举
 				r.setCandidate()
 			default:
-				warn("heartbeat timeout reached, not part of a stable configuration or a non-voter, not triggering a leader election")
+				warn("heartbeat abortCh reached, not part of a stable configuration or a non-voter, not triggering a leader election")
 			}
 			// 继续循环
 		}
@@ -1153,7 +1163,7 @@ func (r *Raft) cycleCandidate() {
 			}
 		case <-electionTimeoutCh:
 			// 选举超时失败，重试
-			r.logger.Warnf("Election timeout reached, restarting election")
+			r.logger.Warnf("Election abortCh reached, restarting election")
 		}
 		return true
 
@@ -1425,6 +1435,57 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*LogFuture) {
 
 	}
 }
+func (r *Raft) leadershipTransfer(info ServerInfo, repl *followerReplication, stopCh chan struct{}, doneCh chan error) {
+
+	select {
+	case <-stopCh:
+		doneCh <- nil
+		return
+	default:
+	}
+	// 必须等到节点的进度跟上当前 leader 才可以正式发起切换
+	for atomic.LoadUint64(&repl.nextIndex) <= r.getLastIndex() {
+		dErr := new(deferResponse[nilRespFuture])
+		dErr.init()
+		repl.triggerDeferRespCh <- dErr
+		select {
+		case err := <-dErr.errCh:
+			if err != nil {
+				doneCh <- err
+				return
+			}
+		case <-stopCh:
+			doneCh <- nil
+			return
+		}
+	}
+	_, err := r.rpc.FastTimeOut(&info, &FastTimeOutRequest{r.buildRPCHeader(nil)})
+	if err != nil {
+		err = fmt.Errorf("failed to make FastTimeOut RPC to id :%s ,addr :%s", info.ID, info.Addr)
+	}
+	doneCh <- err
+}
+
+// pickLatestServer 领导人可以调用这个方法选择，当前集群中除领导人外具有最新日志的节点
+func (r *Raft) pickLatestServer() (pick *ServerInfo) {
+	var current uint64
+	for _, info := range r.getLatestServers() {
+		if info.ID == r.localAddr.ID || info.Suffrage != Voter {
+			continue
+		}
+		state, ok := r.leaderState.replState[info.ID]
+		if !ok {
+			continue
+		}
+		nextIndex := atomic.LoadUint64(&state.nextIndex)
+		if nextIndex > current {
+			current = nextIndex
+			info := info
+			pick = &info
+		}
+	}
+	return
+}
 func (r *Raft) cycleLeader() {
 	overrideNotifyBool(r.leaderCh, true)
 	r.initLeaderState()
@@ -1468,6 +1529,59 @@ func (r *Raft) cycleLeader() {
 			// 忽略
 		case cmd := <-r.cmdChan:
 			r.processCMD(cmd)
+		case l := <-r.leadershipTransferCh:
+			/*
+					 领导权转移，可以指定某个节点立即开始新一轮选举，如果不指定默认选择当前具有最新日志的节点
+				     领导权将在指定节点获得选举权后自动转移
+			*/
+			if r.leadershipTransferInProgress() {
+				r.logger.Debug(ErrLeadershipTransferInProgress.Error())
+				l.fail(ErrLeadershipTransferInProgress)
+				return true
+			}
+			r.logger.Debug("starting leadership transfer , id :%s ,addr :%d", l.ServerInfo.ID, l.ServerInfo.Addr)
+			stopCh := make(chan struct{})
+			doneCh := make(chan error)
+			leftLeaderLoop := make(chan struct{})
+
+			go func() {
+				defer r.setLeadershipTransferInProgress(false)
+				select {
+				case <-time.After(r.Config().ElectionTimeout):
+					close(stopCh)
+					err := errors.New("leadership transfer timeout")
+					r.logger.Debug(err.Error())
+					l.fail(err)
+					<-doneCh
+				case <-leftLeaderLoop:
+					close(stopCh)
+					err := errors.New("lost leadership during transfer (expected)")
+					r.logger.Debug(err.Error())
+					l.success()
+					<-doneCh
+				case err := <-doneCh:
+					if err != nil {
+						r.logger.Debug(err.Error())
+					}
+					l.responded(nil, err)
+				}
+			}()
+
+			if len(l.ServerInfo.ID) == 0 {
+				if latest := r.pickLatestServer(); latest != nil {
+					l.ServerInfo = *latest
+				} else {
+					// 失败，没找到合适的节点
+				}
+			}
+
+			state, ok := r.leaderState.replState[l.ServerInfo.ID]
+			if !ok {
+				doneCh <- fmt.Errorf("connot find replication state for :%s", l.ServerInfo.ID)
+				return true
+			}
+			r.setLeadershipTransferInProgress(true)
+			go r.leadershipTransfer(l.ServerInfo, state, stopCh, doneCh)
 		case verify := <-r.verifyCh:
 			switch {
 			case verify.quorumSize == 0:

@@ -78,7 +78,7 @@ func validateConf(config *Conf) error {
 		return fmt.Errorf("LeaderLeaseTimeout is too low")
 	}
 	if config.LeadershipTimeout > config.HeartBeatTimeout {
-		return fmt.Errorf("LeaderLeaseTimeout (%s) cannot be larger than heartbeat timeout (%s)", config.LeadershipTimeout, config.HeartBeatTimeout)
+		return fmt.Errorf("LeaderLeaseTimeout (%s) cannot be larger than heartbeat abortCh (%s)", config.LeadershipTimeout, config.HeartBeatTimeout)
 	}
 	if config.ElectionTimeout < config.HeartBeatTimeout {
 		return fmt.Errorf("ElectionTimeout (%s) must be equal or greater than Heartbeat Timeout (%s)", config.ElectionTimeout, config.HeartBeatTimeout)

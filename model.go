@@ -49,6 +49,7 @@ type (
 	}
 	// FastTimeOutRequest 引导 leader 直接超时
 	FastTimeOutRequest struct {
+		*RPCHeader
 	}
 	FastTimeOutResponse struct {
 	}

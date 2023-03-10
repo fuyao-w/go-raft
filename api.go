@@ -64,8 +64,9 @@ type Raft struct {
 	// configurationsGetCh 用于从外部安全的获取配置信息
 	configurationsGetCh chan *configurationsGetFuture
 	// verifyCh 用于外部确定当前节点是否还是 leader
-	verifyCh             chan *verifyFuture
-	bootstrapCh          chan *bootstrapFuture
+	verifyCh    chan *verifyFuture
+	bootstrapCh chan *bootstrapFuture
+	// leadershipTransferCh 触发领导权转移，可以指定节点，或者自动选择当前具有最新日志的节点
 	leadershipTransferCh chan *leadershipTransferFuture
 	userRestoreCh        chan *userRestoreFuture
 	// leaderNotifyCh 当有 leader 相关的配置变更时，通过此通道进行通知

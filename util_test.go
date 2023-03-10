@@ -2,6 +2,8 @@ package go_raft
 
 import (
 	. "github.com/fuyao-w/common-util"
+	"sync/atomic"
+	"unsafe"
 
 	"errors"
 	"fmt"
@@ -130,4 +132,26 @@ func TestOverrideNotifyBool(t *testing.T) {
 		}
 	}()
 
+}
+
+func TestAtomicBool(t *testing.T) {
+
+	setPro(true)
+	t.Log(inPro())
+	setPro(false)
+	t.Log(inPro())
+}
+
+var in *bool
+
+func inPro() bool {
+	if in == nil {
+		return false
+	}
+	pointer := atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(&in)))
+	return *(*bool)(pointer)
+}
+func setPro(inProgress bool) {
+
+	atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&in)), unsafe.Pointer(&inProgress))
 }

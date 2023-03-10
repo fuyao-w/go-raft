@@ -31,7 +31,6 @@ type defaultDeferResponse = deferResponse[nilRespFuture]
 type deferResponse[T any] struct {
 	err        error
 	once       *sync.Once
-	timeout    chan time.Time
 	errCh      chan error
 	response   T
 	ShutdownCh <-chan struct{}
@@ -41,13 +40,17 @@ func (d *deferResponse[_]) init() {
 	d.errCh = make(chan error, 1)
 	d.once = new(sync.Once)
 }
+func (d *deferResponse[_]) setTimeout() {
+	d.errCh = make(chan error, 1)
+	d.once = new(sync.Once)
+}
 
 func (d *deferResponse[T]) Response() (T, error) {
 	d.once.Do(func() {
 		select {
 		case d.err = <-d.errCh:
-		case <-d.timeout:
-			d.err = FutureErrTimeout
+		case <-d.ShutdownCh:
+			d.err = ErrShutDown
 		}
 	})
 	return d.response, d.err
@@ -146,7 +149,7 @@ type userRestoreFuture struct {
 
 type leadershipTransferFuture struct {
 	defaultDeferResponse
-	ServerInfo *ServerInfo
+	ServerInfo ServerInfo
 }
 
 type configurationsGetFuture struct {
