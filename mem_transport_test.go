@@ -57,7 +57,7 @@ func TestMemTransport(t *testing.T) {
 	//		Addr:   b.localAddr,
 	//		ErrMsg: "",
 	//	},
-	//	Term:               1,
+	//	term:               1,
 	//	LastLogIndex:       1,
 	//	LastLogTerm:        1,
 	//	LeadershipTransfer: false,

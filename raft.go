@@ -64,11 +64,11 @@ func (r *Raft) restoreUserSnapshot(meta *SnapShotMeta, reader io.Reader) error {
 		ID: sink.ID(),
 	}
 	fu.init()
-	fu.ShutdownCh = r.shutDownCH()
+	fu.ShutdownCh = r.shutDownCh()
 
 	select {
 	case r.fsmMutateCh <- fu:
-	case <-r.shutDownCH():
+	case <-r.shutDownCh():
 		return ErrShutDown
 	}
 
@@ -215,10 +215,11 @@ func NewRaft(config *Conf, logStore LogStore, fsm LogFSM, kvStorage KVStorage, s
 	}
 	raft.rpc.SetHeartbeatFastPath(raft.processHeartBeat)
 	raft.setFollower()
-
-	raft.goFunc(raft.run)
-	raft.goFunc(raft.runSnapShot)
-	raft.goFunc(raft.runLogFSM)
+	raft.goFunc(
+		raft.run,
+		raft.runSnapShot,
+		raft.runLogFSM,
+	)
 	return raft
 }
 
@@ -232,7 +233,7 @@ type commitTuple struct {
 func (r *Raft) run() {
 	for {
 		select {
-		case <-r.shutDownCH():
+		case <-r.shutDownCh():
 			return
 		default:
 			r.tick()
@@ -529,10 +530,10 @@ func (r *Raft) installSnapshot(req *InstallSnapshotRequest, cmd *CMD) {
 		ID: sink.ID(),
 	}
 	fu.init()
-	fu.ShutdownCh = r.shutDownCH()
+	fu.ShutdownCh = r.shutDownCh()
 	select {
 	case r.fsmMutateCh <- fu: // 交给状态机同步到最新的状态
-	case <-r.shutDownCH():
+	case <-r.shutDownCh():
 		fu.responded(nil, ErrShutDown)
 		return
 	}
@@ -761,7 +762,7 @@ func (r *Raft) cycleFollower() {
 
 	runFollower := func() (shouldContinue bool) {
 		select {
-		case <-r.shutDownCH():
+		case <-r.shutDownCh():
 			return
 		case <-r.leaderNotifyCh:
 			// ignore
@@ -817,7 +818,7 @@ func (r *Raft) cycleFollower() {
 func (r *Raft) buildAppendEntriesReq(fr *followerReplication, followerNextIndex, leaderLastIndex uint64) (*AppendEntryRequest, error) {
 	req := &AppendEntryRequest{
 		RPCHeader:    r.buildRPCHeader(nil),
-		Term:         fr.Term,
+		Term:         fr.term,
 		LeaderCommit: r.commitIndex,
 	}
 	setEntries := func() error {
@@ -935,10 +936,7 @@ func (r *Raft) pipelineReplicateTo(fr *followerReplication) error {
 
 }
 func (r *Raft) replicate(fr *followerReplication) {
-	closeHeartBeatCh := make(chan struct{})
-	r.goFunc(func() {
-		r.heartbeat(fr, closeHeartBeatCh)
-	})
+	defer func() { close(fr.closeHeartbeatCh) }()
 	var (
 		shouldStop  bool
 		replicateTo = func(lastLogIndex ...uint64) {
@@ -981,32 +979,26 @@ func (r *Raft) replicate(fr *followerReplication) {
 	}
 
 }
-func (r *Raft) heartbeat(fr *followerReplication, stopHeartBeatCh chan struct{}) {
+func (r *Raft) heartbeat(fr *followerReplication) {
 	server := fr.server.Get()
+	req := &AppendEntryRequest{
+		RPCHeader: r.buildRPCHeader(nil),
+		Term:      fr.term,
+		LeaderID:  r.getLeaderInfo().ID,
+	}
 	for {
 		select {
-		case <-stopHeartBeatCh:
-			return
-		case <-fr.stepDownCh:
-			return
 		case <-randomTimeout(r.Config().HeartBeatTimeout):
-			resp, err := r.rpc.AppendEntries(&server, &AppendEntryRequest{
-				Term:     fr.Term,
-				LeaderID: r.getLeaderInfo().ID,
-			})
-			if err != nil {
-				continue
-			}
-			if resp.Success {
-				fr.lastContact.Set(time.Now())
-			} else if resp.Term > r.currentTerm {
-				r.setCurrentTerm(resp.Term)
-				r.setFollower()
-			}
-		case <-fr.stopCh:
+		case <-fr.notifyCh:
+		case <-fr.closeHeartbeatCh:
 			return
 		}
-
+		resp, err := r.rpc.AppendEntries(&server, req)
+		if err != nil {
+			continue
+		}
+		fr.setLastContact()
+		fr.notifyAll(resp.Success)
 	}
 }
 
@@ -1119,7 +1111,7 @@ func (r *Raft) cycleCandidate() {
 
 	runCandidate := func() (shouldContinue bool) {
 		select {
-		case <-r.shutDownCH():
+		case <-r.shutDownCh():
 			return
 		case <-r.leaderNotifyCh:
 			// ignore
@@ -1172,34 +1164,44 @@ func (r *Raft) cycleCandidate() {
 
 }
 
-// startStopReplicate 对新节点开始心跳，如果节点变化过，则停止已移除 Servers 的节点
-func (r *Raft) startStopReplicate() {
-	var inConfig = make(map[ServerID]bool, len(r.getLatestServers()))
-
+// reloadAllReplicate 新节点开始复制,已移除的节点停止复制
+func (r *Raft) reloadAllReplicate() {
+	var (
+		lastIndex = r.LastIndex() + 1
+		inConfig  = make(map[ServerID]bool, len(r.getLatestServers()))
+	)
 	for _, server := range r.getLatestServers() {
 		if server.ID == r.localAddr.ID {
 			continue
 		}
 		server := server
 		fr, ok := r.leaderState.replState[server.ID]
-		switch {
-		case ok:
+		if ok {
 			fr.server.Set(server)
-		default:
-			inConfig[server.ID] = true
-			r.goFunc(func() {
-				r.replicate(&followerReplication{
-					Term: r.currentTerm,
-					//nextIndex:   r.NextIndex,
-					stepDownCh:  r.leaderState.stepDown,
-					stopCh:      nil,
-					server:      NewLockItem(server),
-					lastContact: NewLockItem[time.Time](),
-					notify:      NewLockItem(notifyMap{}),
-				})
-			})
-
+			continue
 		}
+		inConfig[server.ID] = true
+		fr = &followerReplication{
+			term:               r.currentTerm,
+			nextIndex:          lastIndex,
+			stepDownCh:         r.leaderState.stepDown,
+			server:             NewLockItem(server),
+			lastContact:        NewLockItem[time.Time](),
+			notify:             NewLockItem(notifyMap{}),
+			stopCh:             make(chan uint64, 1),
+			notifyCh:           make(chan struct{}),
+			closeHeartbeatCh:   make(chan struct{}),
+			triggerCh:          make(chan struct{}),
+			triggerDeferRespCh: make(chan *defaultDeferResponse),
+		}
+		r.goFunc(
+			func() {
+				r.replicate(fr)
+			},
+			func() {
+				r.heartbeat(fr)
+			},
+		)
 	}
 
 	// 如果节点已经被移除则需要停止其心跳
@@ -1207,8 +1209,7 @@ func (r *Raft) startStopReplicate() {
 		if inConfig[id] {
 			continue
 		}
-		close(repl.stopCh)
-
+		repl.close()
 	}
 }
 
@@ -1255,8 +1256,9 @@ func (r *Raft) initLeaderState() {
 }
 
 func (r *Raft) verifyLeader(v *verifyFuture) {
-	v.votes++
+	v.votes = 1
 	v.quorumSize = r.quorumSize()
+
 	if v.quorumSize == 1 {
 		v.success()
 		return
@@ -1292,7 +1294,7 @@ func (r *Raft) appendConfigurationEntry(c *configurationChangeFuture) {
 	r.dispatchLogs([]*LogFuture{&c.LogFuture})
 	r.setLatestConfiguration(newConfiguration, c.log.Index)
 	r.leaderState.commitment.setConfiguration(newConfiguration)
-	r.startStopReplicate()
+	r.reloadAllReplicate()
 }
 
 func checkConfiguration(config configuration) error {
@@ -1401,7 +1403,7 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*LogFuture) {
 	applyBatch := func(tupleList []*commitTuple) {
 		select {
 		case r.fsmMutateCh <- tupleList:
-		case <-r.shutDownCH():
+		case <-r.shutDownCh():
 			for _, future := range tupleList {
 				future.future.fail(ErrShutDown)
 			}
@@ -1435,7 +1437,7 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*LogFuture) {
 
 	}
 }
-func (r *Raft) leadershipTransfer(info ServerInfo, repl *followerReplication, stopCh chan struct{}, doneCh chan error) {
+func (r *Raft) fastTimeoutWithPeer(info ServerInfo, repl *followerReplication, stopCh chan struct{}, doneCh chan error) {
 
 	select {
 	case <-stopCh:
@@ -1445,11 +1447,11 @@ func (r *Raft) leadershipTransfer(info ServerInfo, repl *followerReplication, st
 	}
 	// 必须等到节点的进度跟上当前 leader 才可以正式发起切换
 	for atomic.LoadUint64(&repl.nextIndex) <= r.getLastIndex() {
-		dErr := new(deferResponse[nilRespFuture])
-		dErr.init()
-		repl.triggerDeferRespCh <- dErr
+		resp := new(deferResponse[nilRespFuture])
+		resp.init()
+		repl.triggerDeferRespCh <- resp
 		select {
-		case err := <-dErr.errCh:
+		case err := <-resp.errCh:
 			if err != nil {
 				doneCh <- err
 				return
@@ -1489,23 +1491,13 @@ func (r *Raft) pickLatestServer() (pick *ServerInfo) {
 func (r *Raft) cycleLeader() {
 	overrideNotifyBool(r.leaderCh, true)
 	r.initLeaderState()
-	r.startStopReplicate()
+	r.reloadAllReplicate()
 	var (
 		leadershipTimeout = r.Config().LeadershipTimeout
 		stepDown          bool // 用于标识 leader 是否已经下台，因为 select 会出现竞争，所以我们需要额外的同步标记
-		accumulate        = func(log *LogFuture) (entries []*LogFuture) {
-			entries = []*LogFuture{log}
-			for i := 0; i < r.Config().MaxAppendEntries; i++ {
-				select {
-				case logFuture := <-r.applyCh:
-					entries = append(entries, logFuture)
-				default:
-					return
-				}
-			}
-			return
-		}
+		leaveLeaderLoop   = make(chan struct{})
 	)
+	defer func() { close(leaveLeaderLoop) }()
 	// 成为领导者后首先提交一条日志，成功后代表之前的日志均已提交
 	if err := r.dispatchLogs([]*LogFuture{{log: &LogEntry{Type: LogNoop}}}); err != nil {
 		// 提交失败则回退成 follower
@@ -1518,7 +1510,7 @@ func (r *Raft) cycleLeader() {
 	)
 	runLeader := func() (shouldContinue bool) {
 		select {
-		case <-r.shutDownCH():
+		case <-r.shutDownCh():
 			// shutdown
 			return
 		case <-r.leaderNotifyCh:
@@ -1530,103 +1522,13 @@ func (r *Raft) cycleLeader() {
 		case cmd := <-r.cmdChan:
 			r.processCMD(cmd)
 		case l := <-r.leadershipTransferCh:
-			/*
-					 领导权转移，可以指定某个节点立即开始新一轮选举，如果不指定默认选择当前具有最新日志的节点
-				     领导权将在指定节点获得选举权后自动转移
-			*/
-			if r.leadershipTransferInProgress() {
-				r.logger.Debug(ErrLeadershipTransferInProgress.Error())
-				l.fail(ErrLeadershipTransferInProgress)
-				return true
-			}
-			r.logger.Debug("starting leadership transfer , id :%s ,addr :%d", l.ServerInfo.ID, l.ServerInfo.Addr)
-			stopCh := make(chan struct{})
-			doneCh := make(chan error)
-			leftLeaderLoop := make(chan struct{})
-
-			go func() {
-				defer r.setLeadershipTransferInProgress(false)
-				select {
-				case <-time.After(r.Config().ElectionTimeout):
-					close(stopCh)
-					err := errors.New("leadership transfer timeout")
-					r.logger.Debug(err.Error())
-					l.fail(err)
-					<-doneCh
-				case <-leftLeaderLoop:
-					close(stopCh)
-					err := errors.New("lost leadership during transfer (expected)")
-					r.logger.Debug(err.Error())
-					l.success()
-					<-doneCh
-				case err := <-doneCh:
-					if err != nil {
-						r.logger.Debug(err.Error())
-					}
-					l.responded(nil, err)
-				}
-			}()
-
-			if len(l.ServerInfo.ID) == 0 {
-				if latest := r.pickLatestServer(); latest != nil {
-					l.ServerInfo = *latest
-				} else {
-					// 失败，没找到合适的节点
-				}
-			}
-
-			state, ok := r.leaderState.replState[l.ServerInfo.ID]
-			if !ok {
-				doneCh <- fmt.Errorf("connot find replication state for :%s", l.ServerInfo.ID)
-				return true
-			}
-			r.setLeadershipTransferInProgress(true)
-			go r.leadershipTransfer(l.ServerInfo, state, stopCh, doneCh)
+			r.leadershipTransfer(l, leaveLeaderLoop)
 		case verify := <-r.verifyCh:
-			switch {
-			case verify.quorumSize == 0:
-				r.verifyLeader(verify)
-			case verify.votes < verify.quorumSize:
-				r.setFollower()
-				delete(r.leaderState.notify, verify)
-				for _, replication := range r.leaderState.replState {
-					replication.notify.Action(func(t *notifyMap) {
-						if t == nil {
-							return
-						}
-						delete(*t, verify)
-					})
-				}
-				verify.fail(ErrNotLeader)
-			default:
-				delete(r.leaderState.notify, verify)
-				for _, replication := range r.leaderState.replState {
-					replication.notify.Action(func(t *notifyMap) {
-						if t == nil {
-							return
-						}
-						delete(*t, verify)
-					})
-				}
-				verify.success()
-			}
+			r.leaderVerify(verify)
 		case logFuture := <-r.applyCh: // 日志提交
-			if r.leadershipTransferInProgress() {
-				logFuture.fail(ErrLeadershipTransferInProgress)
-				return true
-			}
-			entries := accumulate(logFuture)
-
-			if stepDown {
-				for _, entry := range entries {
-					entry.responded(nil, FutureErrNotLeader)
-				}
-				return true
-			}
-			r.dispatchLogs(entries)
+			r.logApply(logFuture, stepDown)
 		case <-r.leaderState.stepDown:
 			r.setFollower()
-			return false
 		case <-r.leaderState.commitCh:
 			oldCommitIndex := r.commitIndex
 			commitIndex := r.leaderState.commitment.GetCommitIndex()
@@ -1667,24 +1569,140 @@ func (r *Raft) cycleLeader() {
 		case c := <-r.configurationsGetCh:
 			if r.leadershipTransferInProgress() {
 				c.fail(ErrLeadershipTransferInProgress)
-				return true
+			} else {
+				c.responded(r.configurations.Clone(), nil)
 			}
-			c.responded(r.configurations.Clone(), nil)
 		case c := <-r.configurationChangeChIfStable():
 			if r.leadershipTransferInProgress() {
 				c.fail(ErrLeadershipTransferInProgress)
-				return true
+			} else {
+				r.appendConfigurationEntry(c)
 			}
-			r.appendConfigurationEntry(c)
 		case u := <-r.userRestoreCh:
 			if r.leadershipTransferInProgress() {
 				u.fail(ErrLeadershipTransferInProgress)
-				return true
+			} else {
+				u.responded(nil, r.restoreUserSnapshot(u.meta, u.reader))
 			}
-			u.responded(nil, r.restoreUserSnapshot(u.meta, u.reader))
 		}
-
 		return true
 	}
 	r.while(Leader, runLeader)
+}
+
+func (r *Raft) logApply(logFuture *LogFuture, stepDown bool) {
+	accumulate := func(log *LogFuture) (entries []*LogFuture) {
+		entries = []*LogFuture{log}
+		for i := 0; i < r.Config().MaxAppendEntries; i++ {
+			select {
+			case logFuture := <-r.applyCh:
+				entries = append(entries, logFuture)
+			default:
+				return
+			}
+		}
+		return
+	}
+	if r.leadershipTransferInProgress() {
+		r.logger.Debug("failed to apply log cause leadership transfer")
+		logFuture.fail(ErrLeadershipTransferInProgress)
+		return
+	}
+	entries := accumulate(logFuture)
+
+	if !stepDown {
+		r.dispatchLogs(entries)
+		return
+	}
+	r.logger.Debug("failed to apply log cause step donw")
+	for _, entry := range entries {
+		entry.responded(nil, FutureErrNotLeader)
+	}
+}
+
+func (r *Raft) leaderVerify(verify *verifyFuture) {
+	switch {
+	case verify.quorumSize == 0:
+		//默认情况
+		r.verifyLeader(verify)
+	case verify.votes < verify.quorumSize:
+		r.setFollower()
+		delete(r.leaderState.notify, verify)
+		for _, replication := range r.leaderState.replState {
+			replication.notify.Action(func(t *notifyMap) {
+				if t == nil {
+					return
+				}
+				delete(*t, verify)
+			})
+		}
+		verify.fail(ErrNotLeader)
+	default:
+		delete(r.leaderState.notify, verify)
+		for _, replication := range r.leaderState.replState {
+			replication.notify.Action(func(t *notifyMap) {
+				if t == nil {
+					return
+				}
+				delete(*t, verify)
+			})
+		}
+		verify.success()
+	}
+}
+
+// leadershipTransfer  领导权转移，可以指定某个节点立即开始新一轮选举，如果不指定默认选择当前具有最新日志的节点
+//		     领导权将在指定节点获得选举权后自动转移
+func (r *Raft) leadershipTransfer(l *leadershipTransferFuture, leaveLeaderLoop chan struct{}) {
+	var (
+		stopCh = make(chan struct{})
+		doneCh = make(chan error)
+	)
+	if r.leadershipTransferInProgress() {
+		r.logger.Debug(ErrLeadershipTransferInProgress.Error())
+		l.fail(ErrLeadershipTransferInProgress)
+		return
+	}
+
+	r.logger.Debug("starting leadership transfer , id :%s ,addr :%d", l.ServerInfo.ID, l.ServerInfo.Addr)
+
+	if len(l.ServerInfo.ID) == 0 {
+		if latest := r.pickLatestServer(); latest != nil {
+			l.ServerInfo = *latest
+		} else {
+			l.fail(ErrLeadershipTransferFail)
+			return
+			// 失败，没找到合适的节点
+		}
+	}
+
+	go func() {
+		defer r.setLeadershipTransferInProgress(false)
+		select {
+		case <-time.After(r.Config().ElectionTimeout):
+			close(stopCh)
+			err := errors.New("leadership transfer timeout")
+			r.logger.Debug(err.Error())
+			l.fail(err)
+		case <-leaveLeaderLoop:
+			close(stopCh)
+			r.logger.Debug("lost leadership during transfer (expected)")
+			l.success()
+		case err := <-doneCh:
+			if err != nil {
+				r.logger.Debug(err.Error())
+			}
+			l.responded(nil, err)
+			return
+		}
+		<-doneCh
+	}()
+
+	state, ok := r.leaderState.replState[l.ServerInfo.ID]
+	if !ok {
+		doneCh <- fmt.Errorf("connot find replication state for :%s", l.ServerInfo.ID)
+		return
+	}
+	r.setLeadershipTransferInProgress(true)
+	go r.fastTimeoutWithPeer(l.ServerInfo, state, stopCh, doneCh)
 }

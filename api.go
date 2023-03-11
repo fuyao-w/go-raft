@@ -16,11 +16,12 @@ var (
 	ErrLeadershipTransferInProgress    = errors.New("leader ship transfer in progress")
 	// ErrAbortedByRestore is returned when a leader fails to commit a log
 	// entry because it's been superseded by a user snapshot restore.
-	ErrAbortedByRestore = errors.New("snapshot restored while committing log")
-	ErrEnqueueTimeout   = errors.New("timed out enqueuing operation")
-	ErrTimeout          = errors.New("time out")
-	ErrPipelineShutdown = errors.New("append pipeline closed")
-	ErrNotVoter         = errors.New("not voter")
+	ErrAbortedByRestore       = errors.New("snapshot restored while committing log")
+	ErrEnqueueTimeout         = errors.New("timed out enqueuing operation")
+	ErrTimeout                = errors.New("time out")
+	ErrPipelineShutdown       = errors.New("append pipeline closed")
+	ErrNotVoter               = errors.New("not voter")
+	ErrLeadershipTransferFail = errors.New("not found transfer peer")
 )
 
 // Raft 运行上下文
@@ -94,7 +95,7 @@ type Raft struct {
 	logger Logger
 }
 
-func (r *Raft) shutDownCH() <-chan struct{} {
+func (r *Raft) shutDownCh() <-chan struct{} {
 	return r.shutDown.C
 }
 func (r *Raft) restoreSnapShot() {
@@ -139,7 +140,7 @@ func (r *Raft) BootstrapCluster(configuration configuration) defaultFuture {
 	}
 	future.init()
 	select {
-	case <-r.shutDownCH():
+	case <-r.shutDownCh():
 		future.fail(ErrShutDown)
 	case r.bootstrapCh <- future:
 	}
@@ -165,7 +166,7 @@ func (r *Raft) applyLog(entry *LogEntry, timeout time.Duration) ApplyFuture {
 	select {
 	case <-tm:
 		return &errFuture[nilRespFuture]{errors.New("apply log time out")}
-	case <-r.shutDownCH():
+	case <-r.shutDownCh():
 		return &errFuture[nilRespFuture]{ErrShutDown}
 	case r.applyCh <- applyFuture:
 		return applyFuture
@@ -177,7 +178,7 @@ func (r *Raft) VerifyLeader() defaultFuture {
 	vf.init()
 	select {
 
-	case <-r.shutDownCH():
+	case <-r.shutDownCh():
 		return &errFuture[nilRespFuture]{ErrShutDown}
 	case r.verifyCh <- vf:
 		return vf
@@ -215,7 +216,7 @@ func (r *Raft) requestConfigChange(req configurationChangeRequest, timeout time.
 	select {
 	case <-tm:
 		return &errFuture[nilRespFuture]{err: errors.New("apply log time out")}
-	case <-r.shutDownCH():
+	case <-r.shutDownCh():
 		return &errFuture[nilRespFuture]{err: ErrShutDown}
 	case r.configurationChangeCh <- ccf:
 		return ccf
@@ -284,7 +285,7 @@ func (r *Raft) SnapShot() Future[SnapShotFutureResp] {
 	sf.init()
 	select {
 
-	case <-r.shutDownCH():
+	case <-r.shutDownCh():
 		return &errFuture[SnapShotFutureResp]{ErrShutDown}
 	case r.fsmSnapshotCh <- sf:
 		return sf
@@ -312,8 +313,7 @@ func (r *Raft) LeaderTransfer() defaultFuture {
 
 func (r *Raft) initiateLeadershipTransfer(id *ServerID, address *ServerAddr) defaultFuture {
 	future := &leadershipTransferFuture{
-		ServerInfo: &ServerInfo{
-
+		ServerInfo: ServerInfo{
 			ID:   *id,
 			Addr: *address,
 		},
@@ -326,7 +326,7 @@ func (r *Raft) initiateLeadershipTransfer(id *ServerID, address *ServerAddr) def
 	select {
 	case r.leadershipTransferCh <- future:
 		return future
-	case <-r.shutDownCH():
+	case <-r.shutDownCh():
 		return &errFuture[nilRespFuture]{ErrShutDown}
 	default:
 		return &errFuture[nilRespFuture]{ErrEnqueueTimeout}

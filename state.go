@@ -135,11 +135,14 @@ func (r *raftContext) setLastApplied(index uint64) {
 	atomic.StoreUint64(&r.lastApplied, index)
 }
 
-func (r *raftContext) goFunc(f func()) {
-	r.funcEg.Go(func() error {
-		f()
-		return nil
-	})
+func (r *raftContext) goFunc(funcList ...func()) {
+	for _, f := range funcList {
+		f := f
+		r.funcEg.Go(func() error {
+			f()
+			return nil
+		})
+	}
 }
 
 func (r *Raft) waitShutDown() {

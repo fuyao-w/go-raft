@@ -64,7 +64,7 @@ func (r *Raft) runLogFSM() {
 	}
 	for {
 		select {
-		case <-r.shutDownCH():
+		case <-r.shutDownCh():
 			return
 		case inter := <-r.fsmMutateCh:
 			switch req := inter.(type) {

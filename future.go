@@ -120,13 +120,13 @@ type verifyFuture struct {
 	lock       sync.Mutex
 }
 
-func (v *verifyFuture) vote(leader bool) {
+func (v *verifyFuture) vote(succ bool) {
 	v.lock.Lock()
 	defer v.lock.Unlock()
 	if v.notifyCh == nil {
 		return
 	}
-	if leader {
+	if succ {
 		v.votes++
 		if v.votes >= v.quorumSize {
 			v.notify()
