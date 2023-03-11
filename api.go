@@ -22,6 +22,7 @@ var (
 	ErrPipelineShutdown       = errors.New("append pipeline closed")
 	ErrNotVoter               = errors.New("not voter")
 	ErrLeadershipTransferFail = errors.New("not found transfer peer")
+	ErrLeadershipLost         = errors.New("leadership lost")
 )
 
 // Raft 运行上下文
@@ -74,8 +75,8 @@ type Raft struct {
 	leaderNotifyCh chan struct{}
 	// conf  配置
 	conf *AtomicVal[*Conf]
-	// localAddr 当前节点身份和地址信息
-	localAddr ServerInfo
+	// localInfo 当前节点身份和地址信息
+	localInfo ServerInfo
 	// clusterMember 集群的其他成员
 	//clusterMember []*ServerInfo //
 	// shutDown 停机组件
@@ -318,7 +319,7 @@ func (r *Raft) initiateLeadershipTransfer(id *ServerID, address *ServerAddr) def
 			Addr: *address,
 		},
 	}
-	if *id == r.localAddr.ID {
+	if *id == r.localInfo.ID {
 		future.fail(errors.New("can't transfer to itself"))
 		return future
 	}

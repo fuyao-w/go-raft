@@ -99,8 +99,8 @@ func (r *Raft) setLastContact() {
 
 func (r *Raft) buildRPCHeader(err error) *RPCHeader {
 	header := &RPCHeader{
-		ID:   r.localAddr.ID,
-		Addr: r.localAddr.Addr,
+		ID:   r.localInfo.ID,
+		Addr: r.localInfo.Addr,
 	}
 	if err != nil {
 		header.ErrMsg = err.Error()
@@ -128,6 +128,20 @@ type LeaderState struct {
 	leadershipTransferInProgress *bool // indicates that a leadership transfer is in progress.
 }
 
+func (l *LeaderState) close() {
+	for _, replication := range l.replState {
+		replication.close()
+	}
+	for e := l.inflight.Front(); e != nil; e.Next() {
+		e.Value.(*LogFuture).fail(ErrLeadershipLost)
+	}
+	for future, _ := range l.notify {
+		future.fail(ErrLeadershipLost)
+	}
+	*l = LeaderState{
+		leadershipTransferInProgress: l.leadershipTransferInProgress,
+	}
+}
 func (r *Raft) Start() {
 	go r.shutDown.WaitForShutDown()
 }
@@ -185,7 +199,7 @@ func NewRaft(config *Conf, logStore LogStore, fsm LogFSM, kvStorage KVStorage, s
 		userRestoreCh:         make(chan *userRestoreFuture),
 		leaderNotifyCh:        make(chan struct{}),
 		conf:                  NewAtomicVal[*Conf](),
-		localAddr:             ServerInfo{},
+		localInfo:             ServerInfo{},
 		shutDown: shutDown{
 			dataBus: DataBus{},
 			C:       make(chan struct{}),
@@ -695,7 +709,7 @@ func BootstrapCluster(conf *Conf, logs LogStore, stable KVStorage,
 }
 
 func (r *Raft) bootstrap(c configuration) error {
-	if !canVote(c, r.localAddr.ID) {
+	if !canVote(c, r.localInfo.ID) {
 		return ErrNotVoter
 	}
 	err := BootstrapCluster(r.Config(), r.logStore, r.kvStorage, r.snapShotStore, r.rpc, c)
@@ -724,7 +738,7 @@ func (r *Raft) checkLeadership() (keep bool, maxDiff time.Duration) {
 		leadershipTimeout = r.Config().LeadershipTimeout
 	)
 	for _, server := range r.getLatestServers() {
-		if server.ID == r.localAddr.ID {
+		if server.ID == r.localInfo.ID {
 			contacted++
 			continue
 		}
@@ -799,10 +813,10 @@ func (r *Raft) cycleFollower() {
 			case config.latestIndex == 0:
 				warn("unknown peers, aborting election")
 				// 刚加入集群，不知道配置，放弃选举
-			case config.latestIndex == config.commitIndex && !canVote(config.latest, r.localAddr.ID):
+			case config.latestIndex == config.commitIndex && !canVote(config.latest, r.localInfo.ID):
 				warn("no part of stable configuration, aborting election")
 				// 没有选举权，放弃选举
-			case canVote(config.latest, r.localAddr.ID):
+			case canVote(config.latest, r.localInfo.ID):
 				warn("heartbeat abortCh reached, starting election", "last-leader-addr", oldLeaderInfo.Addr, "last-leader-id", oldLeaderInfo.ID)
 				// 发起选举
 				r.setCandidate()
@@ -1032,8 +1046,8 @@ func (r *Raft) launchElection() chan *voteResult {
 	for _, server := range r.getLatestServers() {
 		switch {
 		case server.Suffrage != Voter:
-		case server.ID == r.localAddr.ID: // 选自己
-			if err := r.persistVote(req.Term, r.localAddr.Addr); err != nil {
+		case server.ID == r.localInfo.ID: // 选自己
+			if err := r.persistVote(req.Term, r.localInfo.Addr); err != nil {
 				return nil
 			}
 			respChan <- &voteResult{
@@ -1041,7 +1055,7 @@ func (r *Raft) launchElection() chan *voteResult {
 					Term:        r.currentTerm,
 					VoteGranted: true,
 				},
-				ServerID: r.localAddr.ID,
+				ServerID: r.localInfo.ID,
 			}
 		default:
 			r.goFunc(func() {
@@ -1095,7 +1109,7 @@ func (r *Raft) setCandidate() {
 func (r *Raft) setLeader() {
 	r.state.setState(Leader)
 	r.updateLeaderInfo(func(s *ServerInfo) {
-		*s = r.localAddr
+		*s = r.localInfo
 	})
 	r.tick = r.cycleLeader
 }
@@ -1171,7 +1185,7 @@ func (r *Raft) reloadAllReplicate() {
 		inConfig  = make(map[ServerID]bool, len(r.getLatestServers()))
 	)
 	for _, server := range r.getLatestServers() {
-		if server.ID == r.localAddr.ID {
+		if server.ID == r.localInfo.ID {
 			continue
 		}
 		server := server
@@ -1210,6 +1224,7 @@ func (r *Raft) reloadAllReplicate() {
 			continue
 		}
 		repl.close()
+		delete(r.leaderState.replState, id)
 	}
 }
 
@@ -1235,7 +1250,7 @@ func (r *Raft) dispatchLogs(applyLogs []*LogFuture) error {
 		}
 		return err
 	}
-	r.leaderState.commitment.match(r.localAddr.ID, lastIndex)
+	r.leaderState.commitment.match(r.localInfo.ID, lastIndex)
 	r.setLastLog(currentTerm, lastIndex)
 	for _, repl := range r.leaderState.replState {
 		asyncNotify(repl.triggerCh)
@@ -1472,7 +1487,7 @@ func (r *Raft) fastTimeoutWithPeer(info ServerInfo, repl *followerReplication, s
 func (r *Raft) pickLatestServer() (pick *ServerInfo) {
 	var current uint64
 	for _, info := range r.getLatestServers() {
-		if info.ID == r.localAddr.ID || info.Suffrage != Voter {
+		if info.ID == r.localInfo.ID || info.Suffrage != Voter {
 			continue
 		}
 		state, ok := r.leaderState.replState[info.ID]
@@ -1489,15 +1504,26 @@ func (r *Raft) pickLatestServer() (pick *ServerInfo) {
 	return
 }
 func (r *Raft) cycleLeader() {
-	overrideNotifyBool(r.leaderCh, true)
-	r.initLeaderState()
-	r.reloadAllReplicate()
 	var (
 		leadershipTimeout = r.Config().LeadershipTimeout
 		stepDown          bool // 用于标识 leader 是否已经下台，因为 select 会出现竞争，所以我们需要额外的同步标记
 		leaveLeaderLoop   = make(chan struct{})
 	)
-	defer func() { close(leaveLeaderLoop) }()
+	overrideNotifyBool(r.leaderCh, true)
+	r.initLeaderState()
+	defer func() {
+		close(leaveLeaderLoop)
+		r.setLastContact()
+		r.leaderState.close()
+		r.updateLeaderInfo(func(s *ServerInfo) {
+			if s.Addr == r.localInfo.Addr && s.ID == r.localInfo.ID {
+				*s = ServerInfo{}
+			}
+		})
+	}()
+
+	r.reloadAllReplicate()
+
 	// 成为领导者后首先提交一条日志，成功后代表之前的日志均已提交
 	if err := r.dispatchLogs([]*LogFuture{{log: &LogEntry{Type: LogNoop}}}); err != nil {
 		// 提交失败则回退成 follower
@@ -1535,7 +1561,7 @@ func (r *Raft) cycleLeader() {
 			r.setCommitIndex(commitIndex)
 			if r.configurations.latestIndex > oldCommitIndex && r.configurations.latestIndex < commitIndex {
 				r.setLatestConfiguration(r.configurations.latest, r.configurations.latestIndex)
-				if !canVote(r.configurations.latest, r.localAddr.ID) {
+				if !canVote(r.configurations.latest, r.localInfo.ID) {
 					stepDown = true
 				}
 			}

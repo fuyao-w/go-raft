@@ -54,7 +54,7 @@ func TestMemTransport(t *testing.T) {
 	//a.VoteRequest(bInfo, &VoteRequest{
 	//	RPCHeader: &RPCHeader{
 	//		ID:     "",
-	//		Addr:   b.localAddr,
+	//		Addr:   b.localInfo,
 	//		ErrMsg: "",
 	//	},
 	//	term:               1,
